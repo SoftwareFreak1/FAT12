@@ -1,0 +1,67 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <inttypes.h>
+#include "debug.h"
+#include "block_device.h"
+
+#define BLOCK_SIZE 512
+
+struct BlockDevice {
+    FILE* file;
+};
+
+BlockDevice* file_block_device_open(const char* path) {
+    DBG_PRINT("[ block_device ] open file %s\n", path);
+    BlockDevice* device = (BlockDevice*)malloc(sizeof(BlockDevice));
+    device->file = fopen(path, "r+");
+    return device;
+}
+
+int block_device_read(
+    BlockDevice* device,
+    uint64_t lba,
+    uint32_t block_count,
+    void* buffer
+) {
+    DBG_PRINT("[ block_device ] read %" PRIu32 " block(s) starting at %" PRIu64 "\n", block_count, lba);
+    size_t total_bytes = block_count * BLOCK_SIZE;
+    off_t offset = lba * BLOCK_SIZE;
+    DBG_PRINT("[ file         ] read %zu bytes at 0x%lx\n", total_bytes, offset);
+    fseeko(device->file, offset, SEEK_SET);
+    fread(buffer, 1, total_bytes, device->file);
+    return 0;
+}
+
+int block_device_write(
+    BlockDevice* device,
+    uint64_t lba,
+    uint32_t block_count,
+    const void* buffer
+) {
+    DBG_PRINT("[ block_device ] write %" PRIu32 " block(s) starting at %" PRIu64 "\n", block_count, lba);
+    size_t total_bytes = block_count * BLOCK_SIZE;
+    off_t offset = lba * BLOCK_SIZE;
+    DBG_PRINT("[ file         ] write %zu bytes at 0x%lx\n", total_bytes, offset);
+    fseeko(device->file, offset, SEEK_SET);
+    fwrite(buffer, 1, total_bytes, device->file);
+    return 0;
+}
+
+void block_device_close(BlockDevice* device) {
+    DBG_PRINT("[ block_device ] close\n");
+    fclose(device->file);
+    free(device);
+}
+
+uint32_t block_device_block_size(BlockDevice* device) {
+    (void)device;
+    return BLOCK_SIZE;
+}
+
+uint64_t block_device_block_count(BlockDevice* device) {
+    off_t saved = ftello(device->file);
+    fseeko(device->file, 0, SEEK_END);
+    off_t size = ftello(device->file);
+    fseeko(device->file, saved, SEEK_SET);
+    return (uint64_t)(size / BLOCK_SIZE);
+}

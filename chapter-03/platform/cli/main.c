@@ -6,13 +6,25 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-int main(int argc, char *argv[]) {
-    const char* disk_path = "disk.img";
+static void format_datetime(char* buf, size_t size,
+                            uint16_t time, uint16_t date)
+{
+    unsigned hours = (time >> 11) & 0x1F;
+    unsigned mins  = (time >> 5)  & 0x3F;
+    unsigned secs  = (time & 0x1F) * 2;
 
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <command>\n", argv[0]);
-        return 1;
-    }
+    unsigned day   = date & 0x1F;
+    unsigned month = (date >> 5) & 0x0F;
+    unsigned year  = ((date >> 9) & 0x7F) + 1980;
+
+    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
+             year, month, day, hours, mins, secs);
+}
+
+int main(int argc, char *argv[]) {
+    const char* disk_path = "./disk.img";
+
+    if (argc < 2) return -1;
 
     BlockDevice *disk = file_block_device_open(disk_path);
     if (disk == NULL) {
@@ -42,6 +54,39 @@ int main(int argc, char *argv[]) {
         printf("Drive Number: 0x%02x\n", info.drive_number);
         printf("Boot Signature: 0x%02x\n", info.boot_signature);
         printf("Volume ID: 0x%08x\n", info.volume_id);
+    }
+    else if (strcmp(command, "ls") == 0) {
+        Directory* dir = fat12_opendir(disk, "/");
+
+        printf("Directory: \\\n\n");
+
+        DirEntry entry;
+        while (fat12_readdir(dir, &entry) == 0)
+        {
+            char time_str[20];
+            format_datetime(time_str, sizeof(time_str),
+                            entry.modify_time, entry.modify_date);
+
+            if (entry.attr == 0x08)
+            {
+                printf("%-12s  %-8s  %s\n",
+                       entry.name, "<VOL>", time_str);
+            }
+            else if (entry.attr & 0x10)
+            {
+                printf("%-12s  %-8s  %s\n",
+                       entry.name, "<DIR>", time_str);
+            }
+            else
+            {
+                char size_str[16];
+                snprintf(size_str, sizeof(size_str), "%u B", entry.size);
+                printf("%-12s  %-8s  %s\n",
+                       entry.name, size_str, time_str);
+            }
+        }
+
+        fat12_closedir(dir);
     }
 
     block_device_close(disk);

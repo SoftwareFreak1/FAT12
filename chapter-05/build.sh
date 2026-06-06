@@ -1,4 +1,8 @@
 #!/bin/bash
-gcc -Wall -Wextra -iquote include -iquote platform/cli -iquote src -o fat12-cli \
-    platform/cli/main.c src/fat12.c \
-    platform/cli/file_block_device.c platform/cli/debug.c
+SRC=""
+for d in src platform/cli; do
+    for f in "$d"/*.c; do
+        [ -f "$f" ] && SRC="$SRC $f"
+    done
+done
+gcc -Wall -Wextra -iquote include -iquote src -iquote platform/cli -o fat12-cli $SRC

@@ -40,7 +40,7 @@ int main(int argc, char *argv[]) {
         printf("Number of Heads: %u\n", info.number_of_heads);
         printf("Hidden Sectors: %u\n", info.hidden_sectors);
         printf("Drive Number: 0x%02x\n", info.drive_number);
-        printf("Boot Signature: 0x%02x\n", info.boot_signature);
+        printf("Extended Boot Signature: 0x%02x\n", info.boot_signature);
         printf("Volume ID: 0x%08x\n", info.volume_id);
     }
 

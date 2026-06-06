@@ -7,18 +7,11 @@
 #include "file_block_device.h"
 
 static void format_datetime(char* buf, size_t size,
-                            uint16_t time, uint16_t date)
+                            DosTimestamp ts)
 {
-    unsigned hours = (time >> 11) & 0x1F;
-    unsigned mins  = (time >> 5)  & 0x3F;
-    unsigned secs  = (time & 0x1F) * 2;
-
-    unsigned day   = date & 0x1F;
-    unsigned month = (date >> 5) & 0x0F;
-    unsigned year  = ((date >> 9) & 0x7F) + 1980;
-
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
-             year, month, day, hours, mins, secs);
+             ts.year, ts.month, ts.day,
+             ts.hours, ts.minutes, ts.seconds);
 }
 
 int main(int argc, char *argv[]) {
@@ -52,7 +45,7 @@ int main(int argc, char *argv[]) {
         printf("Number of Heads: %u\n", info.number_of_heads);
         printf("Hidden Sectors: %u\n", info.hidden_sectors);
         printf("Drive Number: 0x%02x\n", info.drive_number);
-        printf("Boot Signature: 0x%02x\n", info.boot_signature);
+        printf("Extended Boot Signature: 0x%02x\n", info.boot_signature);
         printf("Volume ID: 0x%08x\n", info.volume_id);
     }
     else if (strcmp(command, "ls") == 0) {
@@ -65,14 +58,14 @@ int main(int argc, char *argv[]) {
         {
             char time_str[20];
             format_datetime(time_str, sizeof(time_str),
-                            entry.modify_time, entry.modify_date);
+                            entry.modify_time);
 
-            if (entry.attr == 0x08)
+            if (entry.attr == FAT12_ATTR_VOLUME_ID)
             {
                 printf("%-12s  %-8s  %s\n",
                        entry.name, "<VOL>", time_str);
             }
-            else if (entry.attr & 0x10)
+            else if (entry.attr & FAT12_ATTR_DIRECTORY)
             {
                 printf("%-12s  %-8s  %s\n",
                        entry.name, "<DIR>", time_str);

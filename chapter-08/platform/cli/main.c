@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
         printf("Number of Heads: %u\n", info.number_of_heads);
         printf("Hidden Sectors: %u\n", info.hidden_sectors);
         printf("Drive Number: 0x%02x\n", info.drive_number);
-        printf("Boot Signature: 0x%02x\n", info.boot_signature);
+        printf("Extended Boot Signature: 0x%02x\n", info.boot_signature);
         printf("Volume ID: 0x%08x\n", info.volume_id);
     }
     else if (strcmp(command, "ls") == 0) {
@@ -82,12 +82,12 @@ int main(int argc, char *argv[]) {
             format_datetime(time_str, sizeof(time_str),
                             entry.modify_time, entry.modify_date);
 
-            if (entry.attr == 0x08)
+            if (entry.attr == FAT12_ATTR_VOLUME_ID)
             {
                 printf("%-12s  %-8s  %s\n",
                        entry.name, "<VOL>", time_str);
             }
-            else if (entry.attr & 0x10)
+            else if (entry.attr & FAT12_ATTR_DIRECTORY)
             {
                 printf("%-12s  %-8s  %s\n",
                        entry.name, "<DIR>", time_str);
@@ -190,7 +190,11 @@ int main(int argc, char *argv[]) {
         if (fat12_mkdir(disk, path_upper) == 0)
             printf("Directory created\n");
         else
+        {
             fprintf(stderr, "error: could not create directory\n");
+            block_device_close(disk);
+            return 1;
+        }
     }
     else if (strcmp(command, "rm") == 0)
     {
@@ -213,7 +217,11 @@ int main(int argc, char *argv[]) {
         if (fat12_remove(disk, path_upper) == 0)
             printf("File deleted\n");
         else
+        {
             fprintf(stderr, "error: could not delete file\n");
+            block_device_close(disk);
+            return 1;
+        }
     }
     else if (strcmp(command, "rmdir") == 0)
     {
@@ -236,7 +244,11 @@ int main(int argc, char *argv[]) {
         if (fat12_rmdir(disk, path_upper) == 0)
             printf("Directory removed\n");
         else
+        {
             fprintf(stderr, "error: could not remove directory\n");
+            block_device_close(disk);
+            return 1;
+        }
     }
 
     block_device_close(disk);

@@ -6,9 +6,9 @@
 
 static BootSector fat12_read_boot_sector(BlockDevice* disk)
 {
-    uint32_t block_size = block_device_block_size(disk);
+    uint32_t sector_size = block_device_sector_size(disk);
 
-    void* buffer = malloc(block_size);
+    void* buffer = malloc(sector_size);
     block_device_read(disk, 0, 1, buffer);
 
     BootSector result;

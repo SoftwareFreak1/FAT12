@@ -6,9 +6,9 @@
 
 static BootSector fat12_read_boot_sector(BlockDevice* disk)
 {
-    uint32_t block_size = block_device_block_size(disk);
+    uint32_t sector_size = block_device_sector_size(disk);
 
-    void* buffer = malloc(block_size);
+    void* buffer = malloc(sector_size);
     block_device_read(disk, 0, 1, buffer);
 
     BootSector result;
@@ -119,6 +119,18 @@ static void format_8_3_name(const DirectoryEntry* raw, char* out)
     out[i] = '\0';
 }
 
+static DosTimestamp decode_dos_timestamp(uint16_t time, uint16_t date)
+{
+    DosTimestamp ts;
+    ts.hours   = (time >> 11) & 0x1F;
+    ts.minutes = (time >> 5)  & 0x3F;
+    ts.seconds = (time & 0x1F) * 2;
+    ts.day     = date & 0x1F;
+    ts.month   = (date >> 5) & 0x0F;
+    ts.year    = ((date >> 9) & 0x7F) + 1980;
+    return ts;
+}
+
 struct Directory {
     DirectoryEntry* entries;
     uint32_t count;
@@ -149,22 +161,25 @@ int fat12_readdir(Directory* dir, DirEntry* out)
     {
         DirectoryEntry* raw = &dir->entries[dir->offset];
 
+        /* End-of-directory marker -- no more entries after this */
         if (raw->name[0] == 0x00) return -1;
 
         dir->offset++;
 
+        /* Deleted entry */
         if ((unsigned char)raw->name[0] == 0xE5) continue;
-        if (raw->attr == 0x0F) continue;
+        /* Long filename fragment -- not a real entry */
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
 
         memset(out->name, 0, sizeof(out->name));
         format_8_3_name(raw, out->name);
 
         out->size = raw->file_size;
         out->attr = raw->attr;
-        out->create_time = raw->create_time;
-        out->create_date = raw->create_date;
-        out->modify_time = raw->last_write_time;
-        out->modify_date = raw->last_write_date;
+        out->create_time = decode_dos_timestamp(
+            raw->create_time, raw->create_date);
+        out->modify_time = decode_dos_timestamp(
+            raw->last_write_time, raw->last_write_date);
 
         return 0;
     }

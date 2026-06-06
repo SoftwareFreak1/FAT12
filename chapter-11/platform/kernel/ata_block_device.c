@@ -4,8 +4,8 @@
 #include "ata_block_device.h"
 
 struct BlockDevice {
-    uint32_t block_size;
-    uint64_t block_count;
+    uint32_t sector_size;
+    uint64_t sector_count;
 };
 
 #define ATA_DATA     0x1F0
@@ -87,14 +87,14 @@ typedef struct {
 int block_device_read(
     BlockDevice* device,
     uint64_t lba,
-    uint32_t block_count,
+    uint32_t sector_count,
     void* buffer
 )
 {
     (void)device;
     uint8_t* out = (uint8_t*)buffer;
 
-    for (uint32_t i = 0; i < block_count; i++)
+    for (uint32_t i = 0; i < sector_count; i++)
     {
         uint32_t sector = (uint32_t)(lba + i);
 
@@ -117,13 +117,13 @@ int block_device_read(
 int block_device_write(
     BlockDevice* device,
     uint64_t lba,
-    uint32_t block_count,
+    uint32_t sector_count,
     const void* buffer
 )
 {
     (void)device;
     (void)lba;
-    (void)block_count;
+    (void)sector_count;
     (void)buffer;
     return 0;
 }
@@ -133,21 +133,21 @@ void block_device_close(BlockDevice* device)
     (void)device;
 }
 
-uint32_t block_device_block_size(BlockDevice* device)
+uint32_t block_device_sector_size(BlockDevice* device)
 {
-    return device->block_size;
+    return device->sector_size;
 }
 
-uint64_t block_device_block_count(BlockDevice* device)
+uint64_t block_device_sector_count(BlockDevice* device)
 {
-    return device->block_count;
+    return device->sector_count;
 }
 
 static ATADevice g_device;
 
 BlockDevice* ata_block_device_open(void)
 {
-    g_device.base.block_size = 512;
-    g_device.base.block_count = (64 * 1024 * 1024) / 512;
+    g_device.base.sector_size = 512;
+    g_device.base.sector_count = (64 * 1024 * 1024) / 512;
     return (BlockDevice*)&g_device;
 }

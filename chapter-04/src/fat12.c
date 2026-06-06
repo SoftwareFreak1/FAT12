@@ -3,12 +3,13 @@
 #include "block_device.h"
 #include "layout.h"
 #include "fat12.h"
+#include "debug.h"
 
 static BootSector fat12_read_boot_sector(BlockDevice* disk)
 {
-    uint32_t block_size = block_device_block_size(disk);
+    uint32_t sector_size = block_device_sector_size(disk);
 
-    void* buffer = malloc(block_size);
+    void* buffer = malloc(sector_size);
     block_device_read(disk, 0, 1, buffer);
 
     BootSector result;
@@ -119,70 +120,13 @@ static void format_8_3_name(const DirectoryEntry* raw, char* out)
     out[i] = '\0';
 }
 
-struct Directory {
-    DirectoryEntry* entries;
-    uint32_t count;
-    uint32_t offset;
-};
-
-Directory* fat12_opendir(BlockDevice* disk, const char* path)
-{
-    (void)path;
-
-    BootSector bs = fat12_read_boot_sector(disk);
-
-    uint32_t count;
-    DirectoryEntry* entries =
-        fat12_root_directory(disk, bs, &count);
-
-    Directory* dir = (Directory*)malloc(sizeof(Directory));
-    dir->entries = entries;
-    dir->count = count;
-    dir->offset = 0;
-
-    return dir;
-}
-
-int fat12_readdir(Directory* dir, DirEntry* out)
-{
-    while (dir->offset < dir->count)
-    {
-        DirectoryEntry* raw = &dir->entries[dir->offset];
-
-        if (raw->name[0] == 0x00) return -1;
-
-        dir->offset++;
-
-        if ((unsigned char)raw->name[0] == 0xE5) continue;
-        if (raw->attr == 0x0F) continue;
-
-        memset(out->name, 0, sizeof(out->name));
-        format_8_3_name(raw, out->name);
-
-        out->size = raw->file_size;
-        out->attr = raw->attr;
-        out->create_time = raw->create_time;
-        out->create_date = raw->create_date;
-        out->modify_time = raw->last_write_time;
-        out->modify_date = raw->last_write_date;
-
-        return 0;
-    }
-
-    return -1;
-}
-
-void fat12_closedir(Directory* dir)
-{
-    free(dir->entries);
-    free(dir);
-}
-
 static uint32_t first_data_sector(BootSector bs)
 {
-    return bs.bpb.reserved_sector_count +
+    uint32_t lba = bs.bpb.reserved_sector_count +
            (bs.bpb.num_fats * bs.bpb.fat_size_16) +
            root_dir_sector_count(bs);
+    DBG_PRINT("[ fat12 ] first data sector: %u\n", lba);
+    return lba;
 }
 
 static uint16_t read_fat12_entry(
@@ -246,6 +190,9 @@ static uint8_t* read_cluster_chain(
     {
         uint32_t lba = ((cluster - 2) *
             bs.bpb.sectors_per_cluster) + data_start;
+        DBG_PRINT(
+            "[ fat12 ] read: cluster %u -> LBA %u -> data offset %u\n",
+            cluster, lba, (cluster - 2) * cluster_bytes);
 
         uint8_t* buf = (uint8_t*)malloc(cluster_bytes);
         block_device_read(disk, lba,
@@ -271,6 +218,105 @@ static uint8_t* read_cluster_chain(
     return all;
 }
 
+static int find_file_in_root(
+    BlockDevice* disk,
+    BootSector bs,
+    const char* name,
+    uint16_t* out_cluster,
+    uint32_t* out_size
+)
+{
+    uint32_t count;
+    DirectoryEntry* entries =
+        fat12_root_directory(disk, bs, &count);
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        DirectoryEntry* raw = &entries[i];
+
+        if (raw->name[0] == 0x00) break;
+        if ((unsigned char)raw->name[0] == 0xE5) continue;
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
+        if (raw->attr & FAT12_ATTR_DIRECTORY) continue;
+
+        char entry_name[13];
+        format_8_3_name(raw, entry_name);
+
+        if (strcmp(entry_name, name) == 0)
+        {
+            *out_cluster = raw->first_cluster;
+            *out_size = raw->file_size;
+            free(entries);
+            return 1;
+        }
+    }
+
+    free(entries);
+    return 0;
+}
+
+struct Directory {
+    DirectoryEntry* entries;
+    uint32_t count;
+    uint32_t offset;
+};
+
+Directory* fat12_opendir(BlockDevice* disk, const char* path)
+{
+    (void)path;
+
+    BootSector bs = fat12_read_boot_sector(disk);
+
+    uint32_t count;
+    DirectoryEntry* entries =
+        fat12_root_directory(disk, bs, &count);
+
+    Directory* dir = (Directory*)malloc(sizeof(Directory));
+    dir->entries = entries;
+    dir->count = count;
+    dir->offset = 0;
+
+    return dir;
+}
+
+int fat12_readdir(Directory* dir, DirEntry* out)
+{
+    while (dir->offset < dir->count)
+    {
+        DirectoryEntry* raw = &dir->entries[dir->offset];
+
+        /* End-of-directory marker -- no more entries after this */
+        if (raw->name[0] == 0x00) return -1;
+
+        dir->offset++;
+
+        /* Deleted entry */
+        if ((unsigned char)raw->name[0] == 0xE5) continue;
+        /* Long filename fragment -- not a real entry */
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
+
+        memset(out->name, 0, sizeof(out->name));
+        format_8_3_name(raw, out->name);
+
+        out->size = raw->file_size;
+        out->attr = raw->attr;
+        out->create_time = raw->create_time;
+        out->create_date = raw->create_date;
+        out->modify_time = raw->last_write_time;
+        out->modify_date = raw->last_write_date;
+
+        return 0;
+    }
+
+    return -1;
+}
+
+void fat12_closedir(Directory* dir)
+{
+    free(dir->entries);
+    free(dir);
+}
+
 struct File
 {
     BlockDevice* disk;
@@ -285,37 +331,10 @@ File* fat12_open(BlockDevice* disk, const char* path)
 {
     BootSector bs = fat12_read_boot_sector(disk);
 
-    uint32_t count;
-    DirectoryEntry* entries =
-        fat12_root_directory(disk, bs, &count);
-
-    uint16_t first_cluster = 0;
-    uint32_t file_size = 0;
-    int found = 0;
-
-    for (uint32_t i = 0; i < count; i++)
-    {
-        DirectoryEntry* raw = &entries[i];
-
-        if (raw->name[0] == 0x00) break;
-        if ((unsigned char)raw->name[0] == 0xE5) continue;
-        if (raw->attr == 0x0F) continue;
-        if (raw->attr & 0x10) continue;
-
-        char name[13];
-        format_8_3_name(raw, name);
-
-        if (strcmp(name, path) == 0)
-        {
-            first_cluster = raw->first_cluster;
-            file_size = raw->file_size;
-            found = 1;
-            break;
-        }
-    }
-
-    free(entries);
-    if (!found) return NULL;
+    uint16_t first_cluster;
+    uint32_t file_size;
+    if (!find_file_in_root(disk, bs, path, &first_cluster, &file_size))
+        return NULL;
 
     uint8_t* fat = fat_load(disk, bs);
     if (fat == NULL) return NULL;

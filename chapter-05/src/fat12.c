@@ -3,12 +3,13 @@
 #include "block_device.h"
 #include "layout.h"
 #include "fat12.h"
+#include "debug.h"
 
 static BootSector fat12_read_boot_sector(BlockDevice* disk)
 {
-    uint32_t block_size = block_device_block_size(disk);
+    uint32_t sector_size = block_device_sector_size(disk);
 
-    void* buffer = malloc(block_size);
+    void* buffer = malloc(sector_size);
     block_device_read(disk, 0, 1, buffer);
 
     BootSector result;
@@ -121,9 +122,11 @@ static void format_8_3_name(const DirectoryEntry* raw, char* out)
 
 static uint32_t first_data_sector(BootSector bs)
 {
-    return bs.bpb.reserved_sector_count +
+    uint32_t lba = bs.bpb.reserved_sector_count +
            (bs.bpb.num_fats * bs.bpb.fat_size_16) +
            root_dir_sector_count(bs);
+    DBG_PRINT("[ fat12 ] first data sector: %u\n", lba);
+    return lba;
 }
 
 static uint16_t read_fat12_entry(
@@ -187,6 +190,9 @@ static uint8_t* read_cluster_chain(
     {
         uint32_t lba = ((cluster - 2) *
             bs.bpb.sectors_per_cluster) + data_start;
+        DBG_PRINT(
+            "[ fat12 ] read: cluster %u -> LBA %u -> data offset %u\n",
+            cluster, lba, (cluster - 2) * cluster_bytes);
 
         uint8_t* buf = (uint8_t*)malloc(cluster_bytes);
         block_device_read(disk, lba,
@@ -269,8 +275,8 @@ static DirectoryEntry* find_by_name_in_entries(
         DirectoryEntry* raw = &entries[i];
         if (raw->name[0] == 0x00) break;
         if ((unsigned char)raw->name[0] == 0xE5) continue;
-        if (raw->attr == 0x0F) continue;
-        if (raw->attr == 0x08) continue;
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
+        if (raw->attr == FAT12_ATTR_VOLUME_ID) continue;
 
         char entry_name[13];
         format_8_3_name(raw, entry_name);
@@ -332,8 +338,8 @@ static int fat12_resolve_path(
 
         if (i == depth - 1)
         {
-            if ((last_is_dir && !(raw->attr & 0x10)) ||
-                (!last_is_dir && (raw->attr & 0x10)))
+            if ((last_is_dir && !(raw->attr & FAT12_ATTR_DIRECTORY)) ||
+                (!last_is_dir && (raw->attr & FAT12_ATTR_DIRECTORY)))
             {
                 free(current_entries);
                 free(fat);
@@ -346,7 +352,7 @@ static int fat12_resolve_path(
         }
         else
         {
-            if (!(raw->attr & 0x10))
+            if (!(raw->attr & FAT12_ATTR_DIRECTORY))
             {
                 free(current_entries);
                 free(fat);
@@ -415,12 +421,15 @@ int fat12_readdir(Directory* dir, DirEntry* out)
     {
         DirectoryEntry* raw = &dir->entries[dir->offset];
 
+        /* End-of-directory marker -- no more entries after this */
         if (raw->name[0] == 0x00) return -1;
 
         dir->offset++;
 
+        /* Deleted entry */
         if ((unsigned char)raw->name[0] == 0xE5) continue;
-        if (raw->attr == 0x0F) continue;
+        /* Long filename fragment -- not a real entry */
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
 
         memset(out->name, 0, sizeof(out->name));
         format_8_3_name(raw, out->name);
@@ -460,7 +469,7 @@ File* fat12_open(BlockDevice* disk, const char* path)
     if (fat12_resolve_path(disk, path, 0, &resolved) != 0)
         return NULL;
 
-    if (resolved.entry.attr & 0x10)
+    if (resolved.entry.attr & FAT12_ATTR_DIRECTORY)
     {
         free(resolved.fat);
         return NULL;

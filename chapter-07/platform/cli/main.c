@@ -7,24 +7,20 @@
 #include "file_block_device.h"
 
 static void format_datetime(char* buf, size_t size,
-                            uint16_t time, uint16_t date)
+                            DosTimestamp ts)
 {
-    unsigned hours = (time >> 11) & 0x1F;
-    unsigned mins  = (time >> 5)  & 0x3F;
-    unsigned secs  = (time & 0x1F) * 2;
-
-    unsigned day   = date & 0x1F;
-    unsigned month = (date >> 5) & 0x0F;
-    unsigned year  = ((date >> 9) & 0x7F) + 1980;
-
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
-             year, month, day, hours, mins, secs);
+             ts.year, ts.month, ts.day,
+             ts.hours, ts.minutes, ts.seconds);
 }
 
 int main(int argc, char *argv[]) {
-    const char* disk_path = "./disk.img";
+    const char* disk_path = "disk.img";
 
-    if (argc < 2) return -1;
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <command>\n", argv[0]);
+        return 1;
+    }
 
     BlockDevice *disk = file_block_device_open(disk_path);
     if (disk == NULL) {
@@ -56,16 +52,7 @@ int main(int argc, char *argv[]) {
         printf("Volume ID: 0x%08x\n", info.volume_id);
     }
     else if (strcmp(command, "ls") == 0) {
-        char dir_path[256];
-        strncpy(dir_path, (argc >= 3) ? argv[2] : "/", 255);
-        dir_path[255] = '\0';
-        for (int i = 0; dir_path[i]; i++)
-        {
-            if (dir_path[i] >= 'a' && dir_path[i] <= 'z')
-                dir_path[i] -= 32;
-        }
-
-        Directory* dir = fat12_opendir(disk, dir_path);
+        Directory* dir = fat12_opendir(disk, (argc >= 3) ? argv[2] : "/");
         if (dir == NULL)
         {
             fprintf(stderr, "error: directory not found\n");
@@ -73,32 +60,30 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        printf("Directory: %s\n\n", dir_path);
-
         DirEntry entry;
         while (fat12_readdir(dir, &entry) == 0)
         {
             char time_str[20];
             format_datetime(time_str, sizeof(time_str),
-                            entry.modify_time, entry.modify_date);
+                            entry.modify_time);
+
+            char type_str[16];
 
             if (entry.attr == FAT12_ATTR_VOLUME_ID)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<VOL>", time_str);
+                snprintf(type_str, sizeof(type_str), "<VOL>");
             }
             else if (entry.attr & FAT12_ATTR_DIRECTORY)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<DIR>", time_str);
+                snprintf(type_str, sizeof(type_str), "<DIR>");
             }
             else
             {
-                char size_str[16];
-                snprintf(size_str, sizeof(size_str), "%u B", entry.size);
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, size_str, time_str);
+                snprintf(type_str, sizeof(type_str), "%u B", entry.size);
             }
+
+            printf("%-12s  %-8s  %s\n",
+                   entry.name, type_str, time_str);
         }
 
         fat12_closedir(dir);
@@ -112,16 +97,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char name_upper[256];
-        strncpy(name_upper, argv[2], 255);
-        name_upper[255] = '\0';
-        for (int i = 0; name_upper[i]; i++)
-        {
-            if (name_upper[i] >= 'a' && name_upper[i] <= 'z')
-                name_upper[i] -= 32;
-        }
-
-        File* file = fat12_open(disk, name_upper, "r");
+        File* file = fat12_open(disk, argv[2], "r");
         if (file == NULL)
         {
             fprintf(stderr, "error: file not found\n");
@@ -146,16 +122,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char path_upper[256];
-        strncpy(path_upper, argv[2], 255);
-        path_upper[255] = '\0';
-        for (int i = 0; path_upper[i]; i++)
-        {
-            if (path_upper[i] >= 'a' && path_upper[i] <= 'z')
-                path_upper[i] -= 32;
-        }
-
-        File* file = fat12_open(disk, path_upper, "w");
+        File* file = fat12_open(disk, argv[2], "w");
         if (file == NULL)
         {
             fprintf(stderr,
@@ -166,8 +133,6 @@ int main(int argc, char *argv[]) {
 
         fat12_write(file, argv[3], strlen(argv[3]));
         fat12_close(file);
-
-        printf("ok\n");
     }
     else if (strcmp(command, "mkdir") == 0)
     {
@@ -178,22 +143,9 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char path_upper[256];
-        strncpy(path_upper, argv[2], 255);
-        path_upper[255] = '\0';
-        for (int i = 0; path_upper[i]; i++)
-        {
-            if (path_upper[i] >= 'a' && path_upper[i] <= 'z')
-                path_upper[i] -= 32;
-        }
-
-        if (fat12_mkdir(disk, path_upper) == 0)
-            printf("Directory created\n");
-        else
+        if (fat12_mkdir(disk, argv[2]) != 0)
         {
             fprintf(stderr, "error: could not create directory\n");
-            block_device_close(disk);
-            return 1;
         }
     }
 

@@ -90,6 +90,9 @@ static void format_8_3_name(const DirectoryEntry* raw, char* out)
 {
     int i = 0;
 
+    if ((unsigned char)raw->name[0] == 0x05)
+        out[i++] = (char)0xE5;
+
     for (; i < 8 && raw->name[i] != ' '; i++)
         out[i] = raw->name[i];
 
@@ -137,9 +140,37 @@ struct Directory {
     uint32_t offset;
 };
 
+static int next_live_entry(
+    DirectoryEntry* entries,
+    uint32_t count,
+    uint32_t* offset,
+    DirectoryEntry** out
+)
+{
+    while (*offset < count)
+    {
+        DirectoryEntry* raw = &entries[*offset];
+
+        /* End-of-directory marker — no more entries after this */
+        if (raw->name[0] == 0x00) return 0;
+
+        (*offset)++;
+
+        /* Deleted entry */
+        if ((unsigned char)raw->name[0] == 0xE5) continue;
+        /* Long filename fragment — not a real entry */
+        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
+
+        *out = raw;
+        return 1;
+    }
+
+    return 0;
+}
+
 Directory* fat12_opendir(BlockDevice* disk, const char* path)
 {
-    (void)path;
+    (void)path; /* path resolution added in Chapter 5 — always reads root for now */
 
     BootSector bs = fat12_read_boot_sector(disk);
 
@@ -157,34 +188,21 @@ Directory* fat12_opendir(BlockDevice* disk, const char* path)
 
 int fat12_readdir(Directory* dir, DirEntry* out)
 {
-    while (dir->offset < dir->count)
-    {
-        DirectoryEntry* raw = &dir->entries[dir->offset];
+    DirectoryEntry* raw;
+    if (!next_live_entry(dir->entries, dir->count, &dir->offset, &raw))
+        return -1;
 
-        /* End-of-directory marker -- no more entries after this */
-        if (raw->name[0] == 0x00) return -1;
+    memset(out->name, 0, sizeof(out->name));
+    format_8_3_name(raw, out->name);
 
-        dir->offset++;
+    out->size = raw->file_size;
+    out->attr = raw->attr;
+    out->create_time = decode_dos_timestamp(
+        raw->create_time, raw->create_date);
+    out->modify_time = decode_dos_timestamp(
+        raw->last_write_time, raw->last_write_date);
 
-        /* Deleted entry */
-        if ((unsigned char)raw->name[0] == 0xE5) continue;
-        /* Long filename fragment -- not a real entry */
-        if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
-
-        memset(out->name, 0, sizeof(out->name));
-        format_8_3_name(raw, out->name);
-
-        out->size = raw->file_size;
-        out->attr = raw->attr;
-        out->create_time = decode_dos_timestamp(
-            raw->create_time, raw->create_date);
-        out->modify_time = decode_dos_timestamp(
-            raw->last_write_time, raw->last_write_date);
-
-        return 0;
-    }
-
-    return -1;
+    return 0;
 }
 
 void fat12_closedir(Directory* dir)

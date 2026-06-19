@@ -35,15 +35,23 @@ VolumeInfo fat12_volume_info(BlockDevice* disk);
 #define FAT12_ATTR_DIRECTORY   0x10
 #define FAT12_ATTR_ARCHIVE     0x20
 
+/* Decoded DOS timestamp */
+typedef struct {
+    unsigned year;
+    unsigned month;
+    unsigned day;
+    unsigned hours;
+    unsigned minutes;
+    unsigned seconds;
+} DosTimestamp;
+
 /* Directory entry (user-facing) */
 typedef struct {
-    char name[12];
+    char name[13];
     uint32_t size;
     uint8_t attr;
-    uint16_t create_time;
-    uint16_t create_date;
-    uint16_t modify_time;
-    uint16_t modify_date;
+    DosTimestamp create_time;
+    DosTimestamp modify_time;
 } DirEntry;
 
 typedef struct Directory Directory;
@@ -56,16 +64,13 @@ void fat12_closedir(Directory* dir);
 /* File I/O */
 typedef struct File File;
 
-/* Path must be uppercase (FAT stores names in uppercase) */
 File* fat12_open(BlockDevice* disk, const char* path, const char* mode);
 uint32_t fat12_read(File* file, void* buffer, uint32_t size);
 uint32_t fat12_write(File* file, const void* buffer, uint32_t size);
 void fat12_close(File* file);
-
 int fat12_mkdir(BlockDevice* disk, const char* path);
 int fat12_remove(BlockDevice* disk, const char* path);
-int fat12_rmdir(BlockDevice* disk, const char* path);
-int fat12_rename(BlockDevice* disk, const char* old_path, const char* new_path);
-void fat12_format(BlockDevice* disk);
+int fat12_move(BlockDevice* disk, const char* old_path, const char* new_path);
+int fat12_format(BlockDevice* disk);
 
 #endif

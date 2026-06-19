@@ -26,6 +26,15 @@ typedef struct {
 
 VolumeInfo fat12_volume_info(BlockDevice* disk);
 
+/* File attribute flags */
+#define FAT12_ATTR_READ_ONLY   0x01
+#define FAT12_ATTR_HIDDEN      0x02
+#define FAT12_ATTR_SYSTEM      0x04
+#define FAT12_ATTR_VOLUME_ID   0x08
+#define FAT12_ATTR_LONG_NAME   0x0F
+#define FAT12_ATTR_DIRECTORY   0x10
+#define FAT12_ATTR_ARCHIVE     0x20
+
 /* Decoded DOS timestamp */
 typedef struct {
     unsigned year;
@@ -36,18 +45,9 @@ typedef struct {
     unsigned seconds;
 } DosTimestamp;
 
-/* File attribute flags */
-#define FAT12_ATTR_READ_ONLY   0x01
-#define FAT12_ATTR_HIDDEN      0x02
-#define FAT12_ATTR_SYSTEM      0x04
-#define FAT12_ATTR_VOLUME_ID   0x08
-#define FAT12_ATTR_LONG_NAME   0x0F
-#define FAT12_ATTR_DIRECTORY   0x10
-#define FAT12_ATTR_ARCHIVE     0x20
-
 /* Directory entry (user-facing) */
 typedef struct {
-    char name[12];
+    char name[13];
     uint32_t size;
     uint8_t attr;
     DosTimestamp create_time;

@@ -7,24 +7,20 @@
 #include "file_block_device.h"
 
 static void format_datetime(char* buf, size_t size,
-                            uint16_t time, uint16_t date)
+                            DosTimestamp ts)
 {
-    unsigned hours = (time >> 11) & 0x1F;
-    unsigned mins  = (time >> 5)  & 0x3F;
-    unsigned secs  = (time & 0x1F) * 2;
-
-    unsigned day   = date & 0x1F;
-    unsigned month = (date >> 5) & 0x0F;
-    unsigned year  = ((date >> 9) & 0x7F) + 1980;
-
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
-             year, month, day, hours, mins, secs);
+             ts.year, ts.month, ts.day,
+             ts.hours, ts.minutes, ts.seconds);
 }
 
 int main(int argc, char *argv[]) {
-    const char* disk_path = "./disk.img";
+    const char* disk_path = "disk.img";
 
-    if (argc < 2) return -1;
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <command>\n", argv[0]);
+        return 1;
+    }
 
     BlockDevice *disk = file_block_device_open(disk_path);
     if (disk == NULL) {
@@ -58,32 +54,30 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "ls") == 0) {
         Directory* dir = fat12_opendir(disk, "/");
 
-        printf("Directory: \\\n\n");
-
         DirEntry entry;
         while (fat12_readdir(dir, &entry) == 0)
         {
             char time_str[20];
             format_datetime(time_str, sizeof(time_str),
-                            entry.modify_time, entry.modify_date);
+                            entry.modify_time);
+
+            char type_str[16];
 
             if (entry.attr == FAT12_ATTR_VOLUME_ID)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<VOL>", time_str);
+                snprintf(type_str, sizeof(type_str), "<VOL>");
             }
             else if (entry.attr & FAT12_ATTR_DIRECTORY)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<DIR>", time_str);
+                snprintf(type_str, sizeof(type_str), "<DIR>");
             }
             else
             {
-                char size_str[16];
-                snprintf(size_str, sizeof(size_str), "%u B", entry.size);
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, size_str, time_str);
+                snprintf(type_str, sizeof(type_str), "%u B", entry.size);
             }
+
+            printf("%-12s  %-8s  %s\n",
+                   entry.name, type_str, time_str);
         }
 
         fat12_closedir(dir);
@@ -97,16 +91,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        char name_upper[13];
-        strncpy(name_upper, argv[2], 12);
-        name_upper[12] = '\0';
-        for (int i = 0; name_upper[i]; i++)
-        {
-            if (name_upper[i] >= 'a' && name_upper[i] <= 'z')
-                name_upper[i] -= 32;
-        }
-
-        File* file = fat12_open(disk, name_upper);
+        File* file = fat12_open(disk, argv[2], "r");
         if (file == NULL)
         {
             fprintf(stderr, "error: file not found\n");

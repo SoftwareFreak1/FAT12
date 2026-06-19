@@ -130,25 +130,6 @@ void* memcpy(void* dest, const void* src, size_t n)
     return dest;
 }
 
-void* memmove(void* dest, const void* src, size_t n)
-{
-    unsigned char* d = (unsigned char*)dest;
-    const unsigned char* s = (const unsigned char*)src;
-
-    if (d < s)
-    {
-        for (size_t i = 0; i < n; i++)
-            d[i] = s[i];
-    }
-    else if (d > s)
-    {
-        for (size_t i = n; i > 0; i--)
-            d[i - 1] = s[i - 1];
-    }
-
-    return dest;
-}
-
 void* memset(void* s, int c, size_t n)
 {
     unsigned char* p = (unsigned char*)s;
@@ -157,20 +138,6 @@ void* memset(void* s, int c, size_t n)
         p[i] = (unsigned char)c;
 
     return s;
-}
-
-int memcmp(const void* s1, const void* s2, size_t n)
-{
-    const unsigned char* p1 = (const unsigned char*)s1;
-    const unsigned char* p2 = (const unsigned char*)s2;
-
-    for (size_t i = 0; i < n; i++)
-    {
-        if (p1[i] != p2[i])
-            return p1[i] < p2[i] ? -1 : 1;
-    }
-
-    return 0;
 }
 
 size_t strlen(const char* s)
@@ -192,19 +159,6 @@ int strcmp(const char* s1, const char* s2)
     }
 
     return *(unsigned char*)s1 - *(unsigned char*)s2;
-}
-
-int strncmp(const char* s1, const char* s2, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
-    {
-        if (s1[i] != s2[i])
-            return (unsigned char)s1[i] < (unsigned char)s2[i] ? -1 : 1;
-        if (s1[i] == '\0')
-            return 0;
-    }
-
-    return 0;
 }
 
 char* strcpy(char* dest, const char* src)
@@ -280,121 +234,77 @@ char* strdup(const char* s)
     return copy;
 }
 
-char* strtok(char* str, const char* delim)
-{
-    static char* last = NULL;
-
-    if (str != NULL)
-        last = str;
-
-    if (last == NULL)
-        return NULL;
-
-    while (*last != '\0')
-    {
-        int is_delim = 0;
-        for (const char* d = delim; *d != '\0'; d++)
-        {
-            if (*last == *d)
-            {
-                is_delim = 1;
-                break;
-            }
-        }
-
-        if (!is_delim)
-            break;
-
-        last++;
-    }
-
-    if (*last == '\0')
-        return NULL;
-
-    char* token = last;
-
-    while (*last != '\0')
-    {
-        int is_delim = 0;
-        for (const char* d = delim; *d != '\0'; d++)
-        {
-            if (*last == *d)
-            {
-                is_delim = 1;
-                break;
-            }
-        }
-
-        if (is_delim)
-        {
-            *last = '\0';
-            last++;
-            return token;
-        }
-
-        last++;
-    }
-
-    return token;
-}
-
 char* strtok_r(char* str, const char* delim, char** saveptr)
 {
-    if (str != NULL)
-        *saveptr = str;
+    char* token_start;
 
-    if (*saveptr == NULL)
+    if (str != NULL)
+        token_start = str;
+    else
+        token_start = *saveptr;
+
+    if (token_start == NULL)
         return NULL;
 
-    char* start = *saveptr;
-    while (*start != '\0')
+    while (*token_start != '\0')
     {
+        const char* d = delim;
         int is_delim = 0;
-        for (const char* d = delim; *d != '\0'; d++)
+
+        while (*d != '\0')
         {
-            if (*start == *d)
+            if (*token_start == *d)
             {
                 is_delim = 1;
                 break;
             }
+            d++;
         }
+
         if (!is_delim)
             break;
-        start++;
+
+        token_start++;
     }
 
-    if (*start == '\0')
+    if (*token_start == '\0')
     {
         *saveptr = NULL;
         return NULL;
     }
 
-    char* end = start;
-    while (*end != '\0')
+    char* token_end = token_start;
+
+    while (*token_end != '\0')
     {
+        const char* d = delim;
         int is_delim = 0;
-        for (const char* d = delim; *d != '\0'; d++)
+
+        while (*d != '\0')
         {
-            if (*end == *d)
+            if (*token_end == *d)
             {
                 is_delim = 1;
                 break;
             }
+            d++;
         }
+
         if (is_delim)
             break;
-        end++;
+
+        token_end++;
     }
 
-    if (*end == '\0')
+    if (*token_end == '\0')
     {
         *saveptr = NULL;
     }
     else
     {
-        *end = '\0';
-        *saveptr = end + 1;
+        *token_end = '\0';
+        *saveptr = token_end + 1;
     }
 
-    return start;
+    return token_start;
 }

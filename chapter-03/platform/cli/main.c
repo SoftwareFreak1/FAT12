@@ -15,9 +15,12 @@ static void format_datetime(char* buf, size_t size,
 }
 
 int main(int argc, char *argv[]) {
-    const char* disk_path = "./disk.img";
+    const char* disk_path = "disk.img";
 
-    if (argc < 2) return -1;
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <command>\n", argv[0]);
+        return 1;
+    }
 
     BlockDevice *disk = file_block_device_open(disk_path);
     if (disk == NULL) {
@@ -51,8 +54,6 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "ls") == 0) {
         Directory* dir = fat12_opendir(disk, "/");
 
-        printf("Directory: \\\n\n");
-
         DirEntry entry;
         while (fat12_readdir(dir, &entry) == 0)
         {
@@ -60,23 +61,23 @@ int main(int argc, char *argv[]) {
             format_datetime(time_str, sizeof(time_str),
                             entry.modify_time);
 
+            char type_str[16];
+
             if (entry.attr == FAT12_ATTR_VOLUME_ID)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<VOL>", time_str);
+                snprintf(type_str, sizeof(type_str), "<VOL>");
             }
             else if (entry.attr & FAT12_ATTR_DIRECTORY)
             {
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, "<DIR>", time_str);
+                snprintf(type_str, sizeof(type_str), "<DIR>");
             }
             else
             {
-                char size_str[16];
-                snprintf(size_str, sizeof(size_str), "%u B", entry.size);
-                printf("%-12s  %-8s  %s\n",
-                       entry.name, size_str, time_str);
+                snprintf(type_str, sizeof(type_str), "%u B", entry.size);
             }
+
+            printf("%-12s  %-8s  %s\n",
+                   entry.name, type_str, time_str);
         }
 
         fat12_closedir(dir);

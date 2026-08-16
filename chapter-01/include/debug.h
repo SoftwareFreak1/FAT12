@@ -1,13 +1,17 @@
 #ifndef DEBUG_H
 #define DEBUG_H
 
-#define DEBUG 0
-
 #if DEBUG
-    void debug_print(const char* format, ...);
-    #define DBG_PRINT(...) debug_print(__VA_ARGS__)
+#include <stdio.h>
+#include <stdarg.h>
+#define DBG_PRINT(...) \
+    do { \
+        printf("\033[36m"); \
+        printf(__VA_ARGS__); \
+        printf("\033[0m"); \
+    } while (0)
 #else
-    #define DBG_PRINT(...)
+#define DBG_PRINT(...)
 #endif
 
 #endif

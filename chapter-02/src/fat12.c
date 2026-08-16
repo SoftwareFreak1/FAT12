@@ -1,54 +1,55 @@
 #include <stdlib.h>
 #include <string.h>
 #include "block_device.h"
+#include "debug.h"
 #include "layout.h"
 #include "fat12.h"
 
-static BootSector fat12_read_boot_sector(BlockDevice* disk)
+struct FAT12FS {
+    BlockDevice* device;
+    BootSector bs;
+};
+
+static BootSector read_boot_sector(BlockDevice* device)
 {
-    uint32_t sector_size = block_device_sector_size(disk);
-
+    uint32_t sector_size = block_device_sector_size(device);
     void* buffer = malloc(sector_size);
-    block_device_read(disk, 0, 1, buffer);
-
+    block_device_read(device, 0, 1, buffer);
     BootSector result;
     memcpy(&result, buffer, sizeof(BootSector));
-
     free(buffer);
-
     return result;
 }
 
-VolumeInfo fat12_volume_info(BlockDevice* disk)
+FAT12FS* fat12_mount(BlockDevice* device)
 {
-    BootSector s = fat12_read_boot_sector(disk);
-    VolumeInfo info = {0};
+    FAT12FS* fs = malloc(sizeof(FAT12FS));
+    fs->device = device;
+    fs->bs = read_boot_sector(device);
 
-    memcpy(info.oem_name, s.oem_name, 8);
-    info.oem_name[8] = '\0';
+    DBG_PRINT("[ fat12 ] OEM Name: %.8s\n", fs->bs.oem_name);
+    DBG_PRINT("[ fat12 ] Bytes Per Sector: %u\n", fs->bs.bpb.bytes_per_sector);
+    DBG_PRINT("[ fat12 ] Sectors Per Cluster: %u\n", fs->bs.bpb.sectors_per_cluster);
+    DBG_PRINT("[ fat12 ] Reserved Sector Count: %u\n", fs->bs.bpb.reserved_sector_count);
+    DBG_PRINT("[ fat12 ] Number of FATs: %u\n", fs->bs.bpb.num_fats);
+    DBG_PRINT("[ fat12 ] Root Entry Count: %u\n", fs->bs.bpb.root_entry_count);
+    DBG_PRINT("[ fat12 ] Total Sectors (16): %u\n", fs->bs.bpb.total_sectors_16);
+    DBG_PRINT("[ fat12 ] Media Descriptor: 0x%02x\n", fs->bs.bpb.media);
+    DBG_PRINT("[ fat12 ] FAT Size (sectors): %u\n", fs->bs.bpb.fat_size_16);
+    DBG_PRINT("[ fat12 ] Sectors Per Track: %u\n", fs->bs.bpb.sectors_per_track);
+    DBG_PRINT("[ fat12 ] Number of Heads: %u\n", fs->bs.bpb.number_of_heads);
+    DBG_PRINT("[ fat12 ] Hidden Sectors: %u\n", fs->bs.bpb.hidden_sectors);
+    DBG_PRINT("[ fat12 ] Total Sectors (32): %u\n", fs->bs.bpb.total_sectors_32);
+    DBG_PRINT("[ fat12 ] Drive Number: 0x%02x\n", fs->bs.extended_bpb.drive_number);
+    DBG_PRINT("[ fat12 ] Boot Signature: 0x%02x\n", fs->bs.extended_bpb.boot_signature);
+    DBG_PRINT("[ fat12 ] Volume ID: 0x%08x\n", fs->bs.extended_bpb.volume_id);
+    DBG_PRINT("[ fat12 ] Volume Label: %.11s\n", fs->bs.extended_bpb.volume_label);
+    DBG_PRINT("[ fat12 ] File System Type: %.8s\n", fs->bs.extended_bpb.file_system_type);
 
-    memcpy(info.volume_label, s.extended_bpb.volume_label, 11);
-    info.volume_label[11] = '\0';
+    return fs;
+}
 
-    memcpy(info.file_system_type, s.extended_bpb.file_system_type, 8);
-    info.file_system_type[8] = '\0';
-
-    info.bytes_per_sector = s.bpb.bytes_per_sector;
-    info.sectors_per_cluster = s.bpb.sectors_per_cluster;
-    info.reserved_sector_count = s.bpb.reserved_sector_count;
-    info.num_fats = s.bpb.num_fats;
-    info.root_entry_count = s.bpb.root_entry_count;
-    info.total_sectors = s.bpb.total_sectors_16
-        ? s.bpb.total_sectors_16
-        : s.bpb.total_sectors_32;
-    info.media_descriptor = s.bpb.media;
-    info.sectors_per_fat = s.bpb.fat_size_16;
-    info.sectors_per_track = s.bpb.sectors_per_track;
-    info.number_of_heads = s.bpb.number_of_heads;
-    info.hidden_sectors = s.bpb.hidden_sectors;
-    info.drive_number = s.extended_bpb.drive_number;
-    info.boot_signature = s.extended_bpb.boot_signature;
-    info.volume_id = s.extended_bpb.volume_id;
-
-    return info;
+void fat12_umount(FAT12FS* fs)
+{
+    free(fs);
 }

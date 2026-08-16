@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdint.h>
 #include "vga.h"
 #include "ata_block_device.h"
@@ -5,17 +6,25 @@
 #include "fat12.h"
 
 static BlockDevice* g_device;
+static FAT12FS* g_fs;
 
 void kernel_main(void)
 {
     vga_clear();
     g_device = ata_block_device_open();
 
+    g_fs = fat12_mount(g_device);
+    if (g_fs == NULL)
+    {
+        vga_print("Mount failed\n");
+        return;
+    }
+
     vga_print("FAT12 Kernel Boot\n");
 
     /* 1. List root directory */
     vga_print("=== Root Directory ===\n");
-    Directory* dir = fat12_opendir(g_device, "/");
+    Directory* dir = fat12_opendir(g_fs, "/");
     if (dir != NULL)
     {
         DirEntry entry;
@@ -31,7 +40,7 @@ void kernel_main(void)
 
     /* 2. Read /HELLO.TXT from root */
     vga_print("\n=== /HELLO.TXT ===\n");
-    File* f = fat12_open(g_device, "/HELLO.TXT", "r");
+    File* f = fat12_open(g_fs, "/HELLO.TXT", "r");
     if (f != NULL)
     {
         char buf[256];
@@ -48,7 +57,7 @@ void kernel_main(void)
 
     /* 3. Read /DATA/NOTES.TXT from a subdirectory */
     vga_print("\n=== /DATA/NOTES.TXT ===\n");
-    f = fat12_open(g_device, "/DATA/NOTES.TXT", "r");
+    f = fat12_open(g_fs, "/DATA/NOTES.TXT", "r");
     if (f != NULL)
     {
         char buf[256];
@@ -63,5 +72,6 @@ void kernel_main(void)
         fat12_close(f);
     }
 
+    fat12_umount(g_fs);
     vga_print("\nDone.\n");
 }

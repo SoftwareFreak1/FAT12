@@ -6,107 +6,111 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_datetime(char* buf, size_t size,
-                            DosTimestamp ts)
+static void format_datetime(char *buf, size_t size,
+                            Timestamp ts)
 {
-    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
-             ts.year, ts.month, ts.day,
-             ts.hours, ts.minutes, ts.seconds);
+    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u", ts.year, ts.month, ts.day, ts.hours, ts.minutes, ts.seconds);
 }
 
-int main(int argc, char *argv[]) {
-    const char* disk_path = "disk.img";
+static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
+{
+    if (argc < 3)
+    {
+        fprintf(stderr, "usage: %s ls <path>\n", argv[0]);
+        return 1;
+    }
 
-    if (argc < 2) {
+    const char *path = argv[2];
+    Directory *dir = fat12_opendir(fs, path);
+    if (dir == NULL)
+    {
+        fprintf(stderr, "error: directory not found\n");
+        return 1;
+    }
+
+    DirEntry entry;
+    while (fat12_readdir(dir, &entry) == 0)
+    {
+        char time_str[20];
+        char type_str[16];
+        format_datetime(time_str, sizeof(time_str), entry.modify_time);
+
+        if (entry.attr == FAT12_ATTR_VOLUME_ID)
+            snprintf(type_str, sizeof(type_str), "<VOL>");
+        else if (entry.attr & FAT12_ATTR_DIRECTORY)
+            snprintf(type_str, sizeof(type_str), "<DIR>");
+        else
+            snprintf(type_str, sizeof(type_str), "%u B", entry.size);
+
+        printf("%-12s  %-8s  %s\n", entry.name, type_str, time_str);
+    }
+
+    fat12_closedir(dir);
+    return 0;
+}
+
+static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
+{
+    if (argc < 3)
+    {
+        fprintf(stderr, "usage: fat12-cli cat <path>\n");
+        return 1;
+    }
+
+    const char *path = argv[2];
+    File *file = fat12_open(fs, path, "r");
+    if (file == NULL)
+    {
+        fprintf(stderr, "error: file not found\n");
+        return 1;
+    }
+
+    uint8_t buf[512];
+    uint32_t bytes;
+    while ((bytes = fat12_read(file, buf, sizeof(buf))) > 0)
+        fwrite(buf, 1, bytes, stdout);
+
+    fat12_close(file);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
         fprintf(stderr, "usage: %s <command>\n", argv[0]);
         return 1;
     }
 
-    BlockDevice *disk = file_block_device_open(disk_path);
-    if (disk == NULL) {
-        fprintf(stderr, "error: could not open disk.img\n");
+    BlockDevice *device = file_block_device_open("disk.img");
+    if (device == NULL)
+    {
+        fprintf(stderr, "error: could not open disk image\n");
         return 1;
     }
 
-    char* command = argv[1];
-
-    if (strcmp(command, "info") == 0) {
-        VolumeInfo info = fat12_volume_info(disk);
-
-        printf("OEM Name: %s\n", info.oem_name);
-        printf("Volume Label: %s\n", info.volume_label);
-        printf("File System Type: %s\n", info.file_system_type);
-        printf("Bytes Per Sector: %u\n", info.bytes_per_sector);
-        printf("Sectors Per Cluster: %u\n", info.sectors_per_cluster);
-        printf("Reserved Sector Count: %u\n", info.reserved_sector_count);
-        printf("Number of FATs: %u\n", info.num_fats);
-        printf("Root Entry Count: %u\n", info.root_entry_count);
-        printf("Total Sectors: %u\n", info.total_sectors);
-        printf("Media Descriptor: 0x%02x\n", info.media_descriptor);
-        printf("FAT Size (sectors): %u\n", info.sectors_per_fat);
-        printf("Sectors Per Track: %u\n", info.sectors_per_track);
-        printf("Number of Heads: %u\n", info.number_of_heads);
-        printf("Hidden Sectors: %u\n", info.hidden_sectors);
-        printf("Drive Number: 0x%02x\n", info.drive_number);
-        printf("Extended Boot Signature: 0x%02x\n", info.boot_signature);
-        printf("Volume ID: 0x%08x\n", info.volume_id);
-    }
-    else if (strcmp(command, "ls") == 0) {
-        Directory* dir = fat12_opendir(disk, "/");
-
-        DirEntry entry;
-        while (fat12_readdir(dir, &entry) == 0)
-        {
-            char time_str[20];
-            format_datetime(time_str, sizeof(time_str),
-                            entry.modify_time);
-
-            char type_str[16];
-
-            if (entry.attr == FAT12_ATTR_VOLUME_ID)
-            {
-                snprintf(type_str, sizeof(type_str), "<VOL>");
-            }
-            else if (entry.attr & FAT12_ATTR_DIRECTORY)
-            {
-                snprintf(type_str, sizeof(type_str), "<DIR>");
-            }
-            else
-            {
-                snprintf(type_str, sizeof(type_str), "%u B", entry.size);
-            }
-
-            printf("%-12s  %-8s  %s\n",
-                   entry.name, type_str, time_str);
-        }
-
-        fat12_closedir(dir);
-    }
-    else if (strcmp(command, "cat") == 0)
+    FAT12FS *fs = fat12_mount(device);
+    if (fs == NULL)
     {
-        if (argc < 3)
-        {
-            fprintf(stderr, "usage: fat12-cli cat <path>\n");
-            block_device_close(disk);
-            return 1;
-        }
-
-        File* file = fat12_open(disk, argv[2], "r");
-        if (file == NULL)
-        {
-            fprintf(stderr, "error: file not found\n");
-            block_device_close(disk);
-            return 1;
-        }
-
-        uint8_t buf[512];
-        uint32_t bytes;
-        while ((bytes = fat12_read(file, buf, sizeof(buf))) > 0)
-            fwrite(buf, 1, bytes, stdout);
-
-        fat12_close(file);
+        fprintf(stderr, "error: could not mount filesystem\n");
+        block_device_close(device);
+        return 1;
     }
 
-    block_device_close(disk);
-    return 0;
+    char *command = argv[1];
+    int ret = 0;
+
+    if (strcmp(command, "ls") == 0)
+        ret = cmd_ls(fs, argc, argv);
+    else if (strcmp(command, "cat") == 0)
+        ret = cmd_cat(fs, argc, argv);
+    else
+    {
+        fprintf(stderr, "unknown command: %s\n", command);
+        ret = 1;
+    }
+
+    fat12_umount(fs);
+    block_device_close(device);
+    return ret;
 }

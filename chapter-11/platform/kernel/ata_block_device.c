@@ -115,7 +115,7 @@ int block_device_read(
     {
         uint32_t sector = (uint32_t)(lba + i);
 
-        ata_wait_bsy_clear();
+        if (ata_wait_bsy_clear() != 0) return -1;
         outb(ATA_DRIVE, 0xE0 | ((sector >> 24) & 0x0F));
         ata_io_delay();
         outb(ATA_SECCOUNT, 1);
@@ -123,8 +123,8 @@ int block_device_read(
         outb(ATA_LBA_MID,  (uint8_t)(sector >> 8));
         outb(ATA_LBA_HIGH, (uint8_t)(sector >> 16));
         outb(ATA_COMMAND, ATA_CMD_READ);
-        ata_wait_bsy_clear();
-        ata_wait_drq();
+        if (ata_wait_bsy_clear() != 0) return -1;
+        if (ata_wait_drq() != 0)       return -1;
         insw(ATA_DATA, out + (i * 512), 256);
     }
 

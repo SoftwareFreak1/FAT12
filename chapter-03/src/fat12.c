@@ -1,15 +1,134 @@
 #include <stdlib.h>
 #include <string.h>
 #include "block_device.h"
+#include "debug.h"
 #include "layout.h"
 #include "fat12.h"
 
-static BootSector fat12_read_boot_sector(BlockDevice* disk)
+/* Directory entry name[0] sentinels */
+#define NAME_END      0x00
+#define NAME_DELETED  0xE5
+#define FAT12_ATTR_LONG_NAME   0x0F
+
+struct FAT12FS {
+    BlockDevice* device;
+    BootSector bs;
+    /* --- NEW: cached position and size, computed once on mount --- */
+    uint32_t fat_lba;
+    uint32_t fat_sectors;
+    uint32_t root_dir_lba;
+    uint32_t root_dir_sectors;
+};
+
+// Sentinel meaning "the root directory"
+#define ROOT_DIR_CLUSTER 0
+
+static BootSector read_boot_sector(BlockDevice* device);
+static DirectoryEntry* read_root_directory(FAT12FS* fs, uint32_t* count);
+static void decode_8_3_name(const DirectoryEntry* raw, char* out);
+static Timestamp decode_dos_timestamp(uint16_t time, uint16_t date);
+static int next_active_entry(DirectoryEntry* entries, uint32_t count, uint32_t* offset, DirectoryEntry** out);
+static int is_deleted_entry(const DirectoryEntry* entry);
+static int resolve_path(FAT12FS* fs, const char* path, DirectoryEntry* out);
+
+FAT12FS* fat12_mount(BlockDevice* device)
 {
-    uint32_t sector_size = block_device_sector_size(disk);
+    FAT12FS* fs = (FAT12FS*)malloc(sizeof(FAT12FS));
+    fs->device = device;
+    fs->bs = read_boot_sector(device);
+    fs->fat_lba = fs->bs.bpb.reserved_sector_count;
+    fs->fat_sectors = fs->bs.bpb.num_fats * fs->bs.bpb.fat_size_16;
+    fs->root_dir_lba = fs->fat_lba + fs->fat_sectors;
+    fs->root_dir_sectors = ((fs->bs.bpb.root_entry_count * sizeof(DirectoryEntry))
+        + (fs->bs.bpb.bytes_per_sector - 1))
+        / fs->bs.bpb.bytes_per_sector;
+
+    DBG_PRINT("[ fat12 ] FAT start LBA: %u\n", fs->fat_lba);
+    DBG_PRINT("[ fat12 ] FAT size (sectors): %u\n", fs->fat_sectors);
+    DBG_PRINT("[ fat12 ] Root dir start LBA: %u\n", fs->root_dir_lba);
+    DBG_PRINT("[ fat12 ] Root dir size (sectors): %u\n", fs->root_dir_sectors);
+
+    return fs;
+}
+
+void fat12_umount(FAT12FS* fs)
+{
+    free(fs);
+}
+
+struct Directory {
+    DirectoryEntry* entries;
+    uint32_t count;
+    uint32_t offset;
+};
+
+static int resolve_path(
+    FAT12FS* fs,
+    const char* path,
+    DirectoryEntry* out
+)
+{
+    (void)fs;
+    const char* p = path;
+    if (*p == '/') p++;
+
+    if (*p == '\0')
+    {
+        out->attr = FAT12_ATTR_DIRECTORY;
+        out->first_cluster = ROOT_DIR_CLUSTER;
+        return 0;
+    }
+
+    return -1;
+}
+
+Directory* fat12_opendir(FAT12FS* fs, const char* path)
+{
+    DirectoryEntry resolved;
+    if (resolve_path(fs, path, &resolved) != 0)
+        return NULL;
+    if (!(resolved.attr & FAT12_ATTR_DIRECTORY))
+        return NULL;
+
+    uint32_t count;
+    DirectoryEntry* entries = read_root_directory(fs, &count);
+    Directory* dir = (Directory*)malloc(sizeof(Directory));
+    dir->entries = entries;
+    dir->count = count;
+    dir->offset = 0;
+
+    return dir;
+}
+
+int fat12_readdir(Directory* dir, DirEntry* out)
+{
+    DirectoryEntry* raw;
+    if (!next_active_entry(dir->entries, dir->count, &dir->offset, &raw))
+        return -1;
+
+    memset(out->name, 0, sizeof(out->name));
+    decode_8_3_name(raw, out->name);
+
+    out->size = raw->file_size;
+    out->attr = raw->attr;
+    out->create_time = decode_dos_timestamp(raw->create_time, raw->create_date);
+    out->modify_time = decode_dos_timestamp(raw->last_write_time, raw->last_write_date);
+
+    return 0;
+}
+
+void fat12_closedir(Directory* dir)
+{
+    free(dir->entries);
+    free(dir);
+}
+
+static BootSector read_boot_sector(BlockDevice* device)
+{
+    uint32_t sector_size = block_device_sector_size(device);
 
     void* buffer = malloc(sector_size);
-    block_device_read(disk, 0, 1, buffer);
+    block_device_read(device, 0, 1, buffer);
 
     BootSector result;
     memcpy(&result, buffer, sizeof(BootSector));
@@ -19,93 +138,33 @@ static BootSector fat12_read_boot_sector(BlockDevice* disk)
     return result;
 }
 
-VolumeInfo fat12_volume_info(BlockDevice* disk)
-{
-    BootSector s = fat12_read_boot_sector(disk);
-    VolumeInfo info = {0};
-
-    memcpy(info.oem_name, s.oem_name, 8);
-    info.oem_name[8] = '\0';
-
-    memcpy(info.volume_label, s.extended_bpb.volume_label, 11);
-    info.volume_label[11] = '\0';
-
-    memcpy(info.file_system_type, s.extended_bpb.file_system_type, 8);
-    info.file_system_type[8] = '\0';
-
-    info.bytes_per_sector = s.bpb.bytes_per_sector;
-    info.sectors_per_cluster = s.bpb.sectors_per_cluster;
-    info.reserved_sector_count = s.bpb.reserved_sector_count;
-    info.num_fats = s.bpb.num_fats;
-    info.root_entry_count = s.bpb.root_entry_count;
-    info.total_sectors = s.bpb.total_sectors_16
-        ? s.bpb.total_sectors_16
-        : s.bpb.total_sectors_32;
-    info.media_descriptor = s.bpb.media;
-    info.sectors_per_fat = s.bpb.fat_size_16;
-    info.sectors_per_track = s.bpb.sectors_per_track;
-    info.number_of_heads = s.bpb.number_of_heads;
-    info.hidden_sectors = s.bpb.hidden_sectors;
-    info.drive_number = s.extended_bpb.drive_number;
-    info.boot_signature = s.extended_bpb.boot_signature;
-    info.volume_id = s.extended_bpb.volume_id;
-
-    return info;
-}
-
-static uint32_t root_dir_sector_count(BootSector bs)
-{
-    return ((bs.bpb.root_entry_count * 32)
-        + (bs.bpb.bytes_per_sector - 1))
-        / bs.bpb.bytes_per_sector;
-}
-
-static uint32_t calculate_root_dir_lba(BootSector bs)
-{
-    return bs.bpb.reserved_sector_count +
-           (bs.bpb.num_fats * bs.bpb.fat_size_16);
-}
-
-static DirectoryEntry* fat12_root_directory(
-    BlockDevice* disk,
-    BootSector bs,
+static DirectoryEntry* read_root_directory(
+    FAT12FS* fs,
     uint32_t* count
 )
 {
-    uint32_t sectors = root_dir_sector_count(bs);
-    uint32_t lba = calculate_root_dir_lba(bs);
-    uint32_t bytes = sectors * bs.bpb.bytes_per_sector;
-
+    uint32_t bytes = fs->root_dir_sectors * fs->bs.bpb.bytes_per_sector;
     *count = bytes / sizeof(DirectoryEntry);
-
-    DirectoryEntry* entries =
-        (DirectoryEntry*)malloc(bytes);
-
-    block_device_read(disk, lba, sectors, entries);
+    DirectoryEntry* entries = (DirectoryEntry*)malloc(bytes);
+    block_device_read(fs->device, fs->root_dir_lba, fs->root_dir_sectors, entries);
 
     return entries;
 }
 
-static void format_8_3_name(const DirectoryEntry* raw, char* out)
+static void decode_8_3_name(const DirectoryEntry* raw, char* out)
 {
     int i = 0;
 
-    if ((unsigned char)raw->name[0] == 0x05)
+    /* 0x05 escape — real first byte is 0xE5 */
+    if (raw->name[0] == 0x05)
         out[i++] = (char)0xE5;
 
+    /* Copy name bytes until padding or end */
     for (; i < 8 && raw->name[i] != ' '; i++)
         out[i] = raw->name[i];
 
-    int has_ext = 0;
-    for (int k = 0; k < 3; k++)
-    {
-        if (raw->ext[k] != ' ')
-        {
-            has_ext = 1;
-            break;
-        }
-    }
-
+    /* If extension exists, insert dot and copy non-space bytes */
+    int has_ext = raw->ext[0] != ' ';
     if (has_ext)
     {
         out[i] = '.';
@@ -119,12 +178,13 @@ static void format_8_3_name(const DirectoryEntry* raw, char* out)
             }
         }
     }
+
     out[i] = '\0';
 }
 
-static DosTimestamp decode_dos_timestamp(uint16_t time, uint16_t date)
+static Timestamp decode_dos_timestamp(uint16_t time, uint16_t date)
 {
-    DosTimestamp ts;
+    Timestamp ts;
     ts.hours   = (time >> 11) & 0x1F;
     ts.minutes = (time >> 5)  & 0x3F;
     ts.seconds = (time & 0x1F) * 2;
@@ -134,13 +194,15 @@ static DosTimestamp decode_dos_timestamp(uint16_t time, uint16_t date)
     return ts;
 }
 
-struct Directory {
-    DirectoryEntry* entries;
-    uint32_t count;
-    uint32_t offset;
-};
+static int is_deleted_entry(const DirectoryEntry* entry)
+{
+    // Cast to unsigned char: 0xE5 doesn't fit a signed char (-128 to 127),
+    // so without the cast, sign-extension turns it into 0xFFFFFFE5 and the
+    // comparison fails.
+    return (unsigned char)entry->name[0] == NAME_DELETED;
+}
 
-static int next_live_entry(
+static int next_active_entry(
     DirectoryEntry* entries,
     uint32_t count,
     uint32_t* offset,
@@ -152,12 +214,12 @@ static int next_live_entry(
         DirectoryEntry* raw = &entries[*offset];
 
         /* End-of-directory marker — no more entries after this */
-        if (raw->name[0] == 0x00) return 0;
+        if (raw->name[0] == NAME_END) return 0;
 
         (*offset)++;
 
         /* Deleted entry */
-        if ((unsigned char)raw->name[0] == 0xE5) continue;
+        if (is_deleted_entry(raw)) continue;
         /* Long filename fragment — not a real entry */
         if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
 
@@ -166,47 +228,4 @@ static int next_live_entry(
     }
 
     return 0;
-}
-
-Directory* fat12_opendir(BlockDevice* disk, const char* path)
-{
-    (void)path; /* path resolution added in Chapter 5 — always reads root for now */
-
-    BootSector bs = fat12_read_boot_sector(disk);
-
-    uint32_t count;
-    DirectoryEntry* entries =
-        fat12_root_directory(disk, bs, &count);
-
-    Directory* dir = (Directory*)malloc(sizeof(Directory));
-    dir->entries = entries;
-    dir->count = count;
-    dir->offset = 0;
-
-    return dir;
-}
-
-int fat12_readdir(Directory* dir, DirEntry* out)
-{
-    DirectoryEntry* raw;
-    if (!next_live_entry(dir->entries, dir->count, &dir->offset, &raw))
-        return -1;
-
-    memset(out->name, 0, sizeof(out->name));
-    format_8_3_name(raw, out->name);
-
-    out->size = raw->file_size;
-    out->attr = raw->attr;
-    out->create_time = decode_dos_timestamp(
-        raw->create_time, raw->create_date);
-    out->modify_time = decode_dos_timestamp(
-        raw->last_write_time, raw->last_write_date);
-
-    return 0;
-}
-
-void fat12_closedir(Directory* dir)
-{
-    free(dir->entries);
-    free(dir);
 }

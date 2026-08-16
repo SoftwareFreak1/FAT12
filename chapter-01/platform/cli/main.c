@@ -13,9 +13,8 @@ int main(void) {
 
     uint8_t sector[512];
     block_device_read(device, 0, 1, sector);
-
     printf("Volume label: %.11s\n", (const char*)&sector[43]);
-
     block_device_close(device);
+
     return 0;
 }

@@ -127,7 +127,7 @@ void* memcpy(void* dest, const void* src, size_t n)
     for (size_t i = 0; i < n; i++)
         d[i] = s[i];
 
-    return dest;
+    return dest; /* byte-by-byte — correct for any alignment, slow */
 }
 
 void* memset(void* s, int c, size_t n)
@@ -161,19 +161,19 @@ int strcmp(const char* s1, const char* s2)
     return *(unsigned char*)s1 - *(unsigned char*)s2;
 }
 
-char* strcpy(char* dest, const char* src)
+int strncmp(const char* s1, const char* s2, size_t n)
 {
-    char* d = dest;
-
-    while (*src != '\0')
+    while (n > 0 && *s1 && (*s1 == *s2))
     {
-        *d = *src;
-        d++;
-        src++;
+        s1++;
+        s2++;
+        n--;
     }
 
-    *d = '\0';
-    return dest;
+    if (n == 0)
+        return 0;
+
+    return *(unsigned char*)s1 - *(unsigned char*)s2;
 }
 
 char* strncpy(char* dest, const char* src, size_t n)
@@ -234,77 +234,4 @@ char* strdup(const char* s)
     return copy;
 }
 
-char* strtok_r(char* str, const char* delim, char** saveptr)
-{
-    char* token_start;
 
-    if (str != NULL)
-        token_start = str;
-    else
-        token_start = *saveptr;
-
-    if (token_start == NULL)
-        return NULL;
-
-    while (*token_start != '\0')
-    {
-        const char* d = delim;
-        int is_delim = 0;
-
-        while (*d != '\0')
-        {
-            if (*token_start == *d)
-            {
-                is_delim = 1;
-                break;
-            }
-            d++;
-        }
-
-        if (!is_delim)
-            break;
-
-        token_start++;
-    }
-
-    if (*token_start == '\0')
-    {
-        *saveptr = NULL;
-        return NULL;
-    }
-
-    char* token_end = token_start;
-
-    while (*token_end != '\0')
-    {
-        const char* d = delim;
-        int is_delim = 0;
-
-        while (*d != '\0')
-        {
-            if (*token_end == *d)
-            {
-                is_delim = 1;
-                break;
-            }
-            d++;
-        }
-
-        if (is_delim)
-            break;
-
-        token_end++;
-    }
-
-    if (*token_end == '\0')
-    {
-        *saveptr = NULL;
-    }
-    else
-    {
-        *token_end = '\0';
-        *saveptr = token_end + 1;
-    }
-
-    return token_start;
-}

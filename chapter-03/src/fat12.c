@@ -13,7 +13,7 @@
 struct FAT12FS {
     BlockDevice* device;
     BootSector bs;
-    /* --- NEW: cached position and size, computed once on mount --- */
+    /* --- NEW --- */
     uint32_t fat_lba;
     uint32_t fat_sectors;
     uint32_t root_dir_lba;
@@ -26,16 +26,37 @@ struct FAT12FS {
 static BootSector read_boot_sector(BlockDevice* device);
 static DirectoryEntry* read_root_directory(FAT12FS* fs, uint32_t* count);
 static void decode_8_3_name(const DirectoryEntry* raw, char* out);
-static Timestamp decode_dos_timestamp(uint16_t time, uint16_t date);
+static Timestamp decode_timestamp(uint16_t time, uint16_t date);
 static int next_active_entry(DirectoryEntry* entries, uint32_t count, uint32_t* offset, DirectoryEntry** out);
 static int is_deleted_entry(const DirectoryEntry* entry);
 static int resolve_path(FAT12FS* fs, const char* path, DirectoryEntry* out);
+static DirectoryEntry* read_directory(FAT12FS* fs, uint16_t cluster, uint32_t* out_count);
 
 FAT12FS* fat12_mount(BlockDevice* device)
 {
     FAT12FS* fs = (FAT12FS*)malloc(sizeof(FAT12FS));
     fs->device = device;
     fs->bs = read_boot_sector(device);
+
+    DBG_PRINT("[ fat12        ] OEM Name: %.8s\n", fs->bs.oem_name);
+    DBG_PRINT("[ fat12        ] Bytes Per Sector: %u\n", fs->bs.bpb.bytes_per_sector);
+    DBG_PRINT("[ fat12        ] Sectors Per Cluster: %u\n", fs->bs.bpb.sectors_per_cluster);
+    DBG_PRINT("[ fat12        ] Reserved Sector Count: %u\n", fs->bs.bpb.reserved_sector_count);
+    DBG_PRINT("[ fat12        ] Number of FATs: %u\n", fs->bs.bpb.num_fats);
+    DBG_PRINT("[ fat12        ] Root Entry Count: %u\n", fs->bs.bpb.root_entry_count);
+    DBG_PRINT("[ fat12        ] Total Sectors (16): %u\n", fs->bs.bpb.total_sectors_16);
+    DBG_PRINT("[ fat12        ] Media Descriptor: 0x%02x\n", fs->bs.bpb.media);
+    DBG_PRINT("[ fat12        ] FAT Size (sectors): %u\n", fs->bs.bpb.fat_size_16);
+    DBG_PRINT("[ fat12        ] Sectors Per Track: %u\n", fs->bs.bpb.sectors_per_track);
+    DBG_PRINT("[ fat12        ] Number of Heads: %u\n", fs->bs.bpb.number_of_heads);
+    DBG_PRINT("[ fat12        ] Hidden Sectors: %u\n", fs->bs.bpb.hidden_sectors);
+    DBG_PRINT("[ fat12        ] Total Sectors (32): %u\n", fs->bs.bpb.total_sectors_32);
+    DBG_PRINT("[ fat12        ] Drive Number: 0x%02x\n", fs->bs.extended_bpb.drive_number);
+    DBG_PRINT("[ fat12        ] Boot Signature: 0x%02x\n", fs->bs.extended_bpb.boot_signature);
+    DBG_PRINT("[ fat12        ] Volume ID: 0x%08x\n", fs->bs.extended_bpb.volume_id);
+    DBG_PRINT("[ fat12        ] Volume Label: %.11s\n", fs->bs.extended_bpb.volume_label);
+    DBG_PRINT("[ fat12        ] File System Type: %.8s\n", fs->bs.extended_bpb.file_system_type);
+
     fs->fat_lba = fs->bs.bpb.reserved_sector_count;
     fs->fat_sectors = fs->bs.bpb.num_fats * fs->bs.bpb.fat_size_16;
     fs->root_dir_lba = fs->fat_lba + fs->fat_sectors;
@@ -43,10 +64,10 @@ FAT12FS* fat12_mount(BlockDevice* device)
         + (fs->bs.bpb.bytes_per_sector - 1))
         / fs->bs.bpb.bytes_per_sector;
 
-    DBG_PRINT("[ fat12 ] FAT start LBA: %u\n", fs->fat_lba);
-    DBG_PRINT("[ fat12 ] FAT size (sectors): %u\n", fs->fat_sectors);
-    DBG_PRINT("[ fat12 ] Root dir start LBA: %u\n", fs->root_dir_lba);
-    DBG_PRINT("[ fat12 ] Root dir size (sectors): %u\n", fs->root_dir_sectors);
+    DBG_PRINT("[ fat12        ] FAT start LBA: %u\n", fs->fat_lba);
+    DBG_PRINT("[ fat12        ] FAT size (sectors): %u\n", fs->fat_sectors);
+    DBG_PRINT("[ fat12        ] Root dir start LBA: %u\n", fs->root_dir_lba);
+    DBG_PRINT("[ fat12        ] Root dir size (sectors): %u\n", fs->root_dir_sectors);
 
     return fs;
 }
@@ -68,18 +89,29 @@ static int resolve_path(
     DirectoryEntry* out
 )
 {
+    /* unused for now, needed once we walk subdirectories in Chapter 5 */
     (void)fs;
-    const char* p = path;
-    if (*p == '/') p++;
 
-    if (*p == '\0')
+    if (strcmp(path, "/") != 0) return -1;
+
+    out->attr = FAT12_ATTR_DIRECTORY;
+    out->first_cluster = ROOT_DIR_CLUSTER;
+    return 0;
+}
+
+static DirectoryEntry* read_directory(
+    FAT12FS* fs,
+    uint16_t cluster,
+    uint32_t* out_count
+)
+{
+    if (cluster == ROOT_DIR_CLUSTER)
     {
-        out->attr = FAT12_ATTR_DIRECTORY;
-        out->first_cluster = ROOT_DIR_CLUSTER;
-        return 0;
+        return read_root_directory(fs, out_count);
     }
-
-    return -1;
+    /* resolve_path can't resolve anything but root yet; Chapter 5
+       teaches this branch to walk subdirectories instead */
+    return NULL;
 }
 
 Directory* fat12_opendir(FAT12FS* fs, const char* path)
@@ -91,7 +123,10 @@ Directory* fat12_opendir(FAT12FS* fs, const char* path)
         return NULL;
 
     uint32_t count;
-    DirectoryEntry* entries = read_root_directory(fs, &count);
+    DirectoryEntry* entries = read_directory(fs, resolved.first_cluster, &count);
+
+    if (entries == NULL) return NULL;
+
     Directory* dir = (Directory*)malloc(sizeof(Directory));
     dir->entries = entries;
     dir->count = count;
@@ -106,13 +141,12 @@ int fat12_readdir(Directory* dir, DirEntry* out)
     if (!next_active_entry(dir->entries, dir->count, &dir->offset, &raw))
         return -1;
 
-    memset(out->name, 0, sizeof(out->name));
     decode_8_3_name(raw, out->name);
 
     out->size = raw->file_size;
     out->attr = raw->attr;
-    out->create_time = decode_dos_timestamp(raw->create_time, raw->create_date);
-    out->modify_time = decode_dos_timestamp(raw->last_write_time, raw->last_write_date);
+    out->create_time = decode_timestamp(raw->create_time, raw->create_date);
+    out->modify_time = decode_timestamp(raw->last_write_time, raw->last_write_date);
 
     return 0;
 }
@@ -182,7 +216,7 @@ static void decode_8_3_name(const DirectoryEntry* raw, char* out)
     out[i] = '\0';
 }
 
-static Timestamp decode_dos_timestamp(uint16_t time, uint16_t date)
+static Timestamp decode_timestamp(uint16_t time, uint16_t date)
 {
     Timestamp ts;
     ts.hours   = (time >> 11) & 0x1F;

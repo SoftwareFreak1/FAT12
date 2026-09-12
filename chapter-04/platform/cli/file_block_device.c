@@ -29,7 +29,7 @@ int block_device_read(
     DBG_PRINT("[ block_device ] read %" PRIu32 " sector(s) starting at LBA %" PRIu64 "\n", sector_count, lba);
     size_t total_bytes = sector_count * SECTOR_SIZE;
     off_t offset = lba * SECTOR_SIZE;
-    DBG_PRINT("[ file         ] read %zu bytes at 0x%" PRIx64 "\n", total_bytes, (uint64_t)offset);
+    DBG_PRINT("[ file_io      ] read %zu bytes at 0x%" PRIx64 "\n", total_bytes, (uint64_t)offset);
     fseeko(device->file, offset, SEEK_SET);
     fread(buffer, 1, total_bytes, device->file);
     return 0;
@@ -44,7 +44,7 @@ int block_device_write(
     DBG_PRINT("[ block_device ] write %" PRIu32 " sector(s) starting at LBA %" PRIu64 "\n", sector_count, lba);
     size_t total_bytes = sector_count * SECTOR_SIZE;
     off_t offset = lba * SECTOR_SIZE;
-    DBG_PRINT("[ file         ] write %zu bytes at 0x%" PRIx64 "\n", total_bytes, (uint64_t)offset);
+    DBG_PRINT("[ file_io      ] write %zu bytes at 0x%" PRIx64 "\n", total_bytes, (uint64_t)offset);
     fseeko(device->file, offset, SEEK_SET);
     fwrite(buffer, 1, total_bytes, device->file);
     return 0;

@@ -6,7 +6,7 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_datetime(char *buf, size_t size, Timestamp ts)
+static void format_timestamp(char *buf, size_t size, Timestamp ts)
 {
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
              ts.year, ts.month, ts.day,
@@ -34,7 +34,7 @@ static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
     {
         char time_str[20];
         char type_str[16];
-        format_datetime(time_str, sizeof(time_str), entry.modify_time);
+        format_timestamp(time_str, sizeof(time_str), entry.modify_time);
 
         if (entry.attr == FAT12_ATTR_VOLUME_ID)
             snprintf(type_str, sizeof(type_str), "<VOL>");
@@ -54,11 +54,11 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc < 3)
     {
-        fprintf(stderr, "usage: fat12-cli cat <path>\n");
+        fprintf(stderr, "usage: %s cat <path>\n", argv[0]);
         return 1;
     }
     const char *path = argv[2];
-    File *file = fat12_open(fs, path, "r");
+    File *file = fat12_open(fs, path, 'r');
     if (file == NULL)
     {
         fprintf(stderr, "error: file not found\n");
@@ -74,38 +74,33 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
     return 0;
 }
 
-static int cmd_write(FAT12FS *fs, int argc, char *argv[])
+static int cmd_create(FAT12FS *fs, int argc, char *argv[])
 {
-    if (argc < 4)
+    if (argc < 3)
     {
-        fprintf(stderr, "usage: fat12-cli write <fat_path> <local_path>\n");
+        fprintf(stderr, "usage: fat12-cli create <fat_path>  (reads file content from stdin)\n");
         return 1;
     }
 
     const char *fat_path = argv[2];
-    const char *local_path = argv[3];
-    FILE *local = fopen(local_path, "rb");
-    if (local == NULL)
-    {
-        fprintf(stderr, "error: cannot open '%s'\n", local_path);
-        return 1;
-    }
 
-    File *file = fat12_open(fs, fat_path, "w");
+    File *file = fat12_open(fs, fat_path, 'w');
     if (file == NULL)
     {
         fprintf(stderr, "error: '%s' already exists or cannot be created\n", fat_path);
-        fclose(local);
         return 1;
     }
 
     uint8_t buf[512];
     size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), local)) > 0)
+    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
         fat12_write(file, buf, n);
 
-    fat12_close(file);
-    fclose(local);
+    if (fat12_close(file) != 0)
+    {
+        fprintf(stderr, "error: not enough free space to write '%s'\n", fat_path);
+        return 1;
+    }
 
     return 0;
 }
@@ -162,12 +157,6 @@ int main(int argc, char *argv[])
     }
 
     FAT12FS *fs = fat12_mount(device);
-    if (fs == NULL)
-    {
-        fprintf(stderr, "error: could not mount filesystem\n");
-        block_device_close(device);
-        return 1;
-    }
 
     char *command = argv[1];
     int ret = 0;
@@ -176,8 +165,8 @@ int main(int argc, char *argv[])
         ret = cmd_ls(fs, argc, argv);
     else if (strcmp(command, "cat") == 0)
         ret = cmd_cat(fs, argc, argv);
-    else if (strcmp(command, "write") == 0)
-        ret = cmd_write(fs, argc, argv);
+    else if (strcmp(command, "create") == 0)
+        ret = cmd_create(fs, argc, argv);
     else if (strcmp(command, "mkdir") == 0)
         ret = cmd_mkdir(fs, argc, argv);
     else if (strcmp(command, "rm") == 0)

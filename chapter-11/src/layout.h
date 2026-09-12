@@ -9,10 +9,10 @@ typedef struct {
     uint16_t bytes_per_sector;
     uint8_t sectors_per_cluster;
     uint16_t reserved_sector_count;
-    uint8_t  num_fats;
+    uint8_t num_fats;
     uint16_t root_entry_count;
     uint16_t total_sectors_16;
-    uint8_t  media;
+    uint8_t media;
     uint16_t fat_size_16;
     uint16_t sectors_per_track;
     uint16_t number_of_heads;
@@ -21,9 +21,9 @@ typedef struct {
 } BPB;
 
 typedef struct {
-    uint8_t  drive_number;
-    uint8_t  reserved_nt;
-    uint8_t  boot_signature;
+    uint8_t drive_number;
+    uint8_t reserved_nt;
+    uint8_t boot_signature;
     uint32_t volume_id;
     char volume_label[11];
     char file_system_type[8];

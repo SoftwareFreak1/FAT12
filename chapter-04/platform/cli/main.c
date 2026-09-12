@@ -6,7 +6,7 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_datetime(char *buf, size_t size,
+static void format_timestamp(char *buf, size_t size,
                             Timestamp ts)
 {
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u", ts.year, ts.month, ts.day, ts.hours, ts.minutes, ts.seconds);
@@ -33,7 +33,7 @@ static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
     {
         char time_str[20];
         char type_str[16];
-        format_datetime(time_str, sizeof(time_str), entry.modify_time);
+        format_timestamp(time_str, sizeof(time_str), entry.modify_time);
 
         if (entry.attr == FAT12_ATTR_VOLUME_ID)
             snprintf(type_str, sizeof(type_str), "<VOL>");
@@ -53,12 +53,12 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc < 3)
     {
-        fprintf(stderr, "usage: fat12-cli cat <path>\n");
+        fprintf(stderr, "usage: %s cat <path>\n", argv[0]);
         return 1;
     }
 
     const char *path = argv[2];
-    File *file = fat12_open(fs, path, "r");
+    File *file = fat12_open(fs, path, 'r');
     if (file == NULL)
     {
         fprintf(stderr, "error: file not found\n");
@@ -90,12 +90,6 @@ int main(int argc, char *argv[])
     }
 
     FAT12FS *fs = fat12_mount(device);
-    if (fs == NULL)
-    {
-        fprintf(stderr, "error: could not mount filesystem\n");
-        block_device_close(device);
-        return 1;
-    }
 
     char *command = argv[1];
     int ret = 0;

@@ -2,14 +2,19 @@
 #include <stdint.h>
 #include <string.h>
 #include "vga.h"
-#include "ram_disk_block_device.h"
+#include "ata_block_device.h"
 #include "block_device.h"
 #include "fat12.h"
 
 void kernel_main(void)
 {
     vga_clear();
-    BlockDevice* device = ram_disk_block_device_open();
+    BlockDevice* device = ata_block_device_open();
+    if (device == NULL)
+    {
+        vga_print("Disk not found\n");
+        return;
+    }
 
     /* Format a fresh volume */
     FormatParams params = { "KERNEL" };

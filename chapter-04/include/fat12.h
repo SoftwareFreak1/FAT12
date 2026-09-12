@@ -45,8 +45,8 @@ void fat12_closedir(Directory* dir);
 /* File I/O */
 typedef struct File File;
 
-File* fat12_open(FAT12FS* fs, const char* path, const char* mode);
+File* fat12_open(FAT12FS* fs, const char* path, char mode);
 uint32_t fat12_read(File* file, void* buffer, uint32_t size);
-void fat12_close(File* file);
+int fat12_close(File* file);
 
 #endif

@@ -217,10 +217,7 @@ int main(int argc, char *argv[])
     {
         fat12_umount(fs);
         ret = cmd_format(device, argc, argv);
-        if (ret == 0)
-            fs = fat12_mount(device);
-        else
-            fs = NULL;
+        fs = fat12_mount(device);
     }
     else
     {
@@ -228,8 +225,7 @@ int main(int argc, char *argv[])
         ret = 1;
     }
 
-    if (fs != NULL)
-        fat12_umount(fs);
+    fat12_umount(fs);
     block_device_close(device);
     return ret;
 }

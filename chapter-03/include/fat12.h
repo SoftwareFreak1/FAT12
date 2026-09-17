@@ -15,8 +15,6 @@ void fat12_umount(FAT12FS* fs);
 #define FAT12_ATTR_DIRECTORY   0x10
 #define FAT12_ATTR_ARCHIVE     0x20
 
-
-/* Decoded timestamp */
 typedef struct {
     unsigned year;
     unsigned month;
@@ -26,7 +24,6 @@ typedef struct {
     unsigned seconds;
 } Timestamp;
 
-/* Directory entry (user-facing) */
 typedef struct {
     char name[13];
     uint32_t size;
@@ -37,7 +34,6 @@ typedef struct {
 
 typedef struct Directory Directory;
 
-/* Directory iteration */
 Directory* fat12_opendir(FAT12FS* fs, const char* path);
 int fat12_readdir(Directory* dir, DirEntry* out);
 void fat12_closedir(Directory* dir);

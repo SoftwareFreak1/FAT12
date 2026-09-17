@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "block_device.h"
@@ -10,6 +11,7 @@
 #define NAME_END      0x00
 #define FAT12_ATTR_LONG_NAME   0x0F
 
+// Sentinel meaning "the root directory"
 #define ROOT_DIR_CLUSTER 0
 
 struct FAT12FS {
@@ -24,57 +26,32 @@ struct FAT12FS {
     uint32_t data_cluster_count;
 };
 
-/* ---- Forward declarations for internal helpers ---- */
-
 static BootSector read_boot_sector(BlockDevice* device);
+static DirectoryEntry* read_root_directory(FAT12FS* fs, uint32_t* count);
 static void decode_8_3_name(const DirectoryEntry* raw, char* out);
 static Timestamp decode_timestamp(uint16_t time, uint16_t date);
-static int next_active_entry(
-    DirectoryEntry* entries,
-    uint32_t count,
-    uint32_t* offset,
-    DirectoryEntry** out
-);
+static int next_active_entry(DirectoryEntry* entries, uint32_t count, uint32_t* offset, DirectoryEntry** out);
 static int is_deleted_entry(const DirectoryEntry* entry);
 static uint32_t data_cluster_to_lba(FAT12FS* fs, uint16_t cluster);
-static uint16_t find_next_cluster(
-    FAT12FS* fs,
-    uint16_t cluster
-);
+static uint16_t find_next_cluster(FAT12FS* fs, uint16_t cluster);
+static uint8_t* read_cluster_chain(FAT12FS* fs, uint16_t first_cluster, uint32_t* out_bytes);
 static void str_upper(char* s);
-static void set_next_cluster(
-    uint8_t* fat,
-    uint16_t cluster,
-    uint16_t value
-);
-static uint16_t time_encode(const Timestamp* dt);
-static uint16_t date_encode(const Timestamp* dt);
+static int resolve_path(FAT12FS* fs, const char* path, DirectoryEntry* out);
+static DirectoryEntry* read_directory_entries(FAT12FS* fs, uint16_t first_cluster, uint32_t* count);
+static DirectoryEntry* read_directory(FAT12FS* fs, uint16_t cluster, uint32_t* out_count);
+static DirectoryEntry* find_entry_by_name(DirectoryEntry* entries, uint32_t count, const char* name);
 static int find_free_entry(DirectoryEntry* entries, uint32_t count);
 static void encode_8_3_name(DirectoryEntry* entry, const char* name);
-static DirectoryEntry* read_root_directory(
-    FAT12FS* fs,
-    uint32_t* count
-);
-static uint8_t* read_cluster_chain(
-    FAT12FS* fs,
-    uint16_t first_cluster,
-    uint32_t* out_bytes
-);
-static DirectoryEntry* read_directory_entries(
-    FAT12FS* fs,
-    uint16_t first_cluster,
-    uint32_t* count
-);
-static DirectoryEntry* read_directory(FAT12FS* fs, uint16_t cluster, uint32_t* out_count);
+static uint16_t time_encode(const Timestamp* dt);
+static uint16_t date_encode(const Timestamp* dt);
+static void set_entry_timestamps(DirectoryEntry* entry);
+static int get_parent_and_name(const char* path, char* out_parent, char* out_name);
+static void write_directory(FAT12FS* fs, uint16_t parent_cluster, DirectoryEntry* entries, uint32_t count);
+static int create_dir_entry(FAT12FS* fs, const char* path, int* out_slot, uint16_t* out_parent_cluster);
+static void set_next_cluster(uint8_t* fat, uint16_t cluster, uint16_t value);
 static uint16_t allocate_cluster_chain(FAT12FS* fs, uint32_t needed_bytes, uint32_t* out_chain_bytes);
 static void write_cluster_chain(FAT12FS* fs, uint16_t first_cluster, const uint8_t* data, uint32_t size);
 static void flush_fats(FAT12FS* fs);
-static void set_entry_timestamps(DirectoryEntry* entry);
-static DirectoryEntry* find_entry_by_name(DirectoryEntry* entries, uint32_t count, const char* name);
-static void write_directory(FAT12FS* fs, uint16_t parent_cluster, DirectoryEntry* entries, uint32_t count);
-static int resolve_path(FAT12FS* fs, const char* path, DirectoryEntry* out);
-static int get_parent_and_name(const char* path, char* out_parent, char* out_name);
-static int create_dir_entry(FAT12FS* fs, const char* path, int* out_slot, uint16_t* out_parent_cluster);
 static int update_dir_entry(FAT12FS* fs, uint16_t parent_cluster, int slot, uint16_t first_cluster, uint32_t file_size);
 
 static uint32_t total_data_clusters(FAT12FS* fs)
@@ -88,11 +65,9 @@ static uint32_t total_data_clusters(FAT12FS* fs)
     return data_sectors / fs->bs.bpb.sectors_per_cluster;
 }
 
-/* ---- Public API ---- */
-
 FAT12FS* fat12_mount(BlockDevice* device)
 {
-    FAT12FS* fs = (FAT12FS*)malloc(sizeof(FAT12FS));
+    FAT12FS* fs = malloc(sizeof(FAT12FS));
     fs->device = device;
     fs->bs = read_boot_sector(device);
 
@@ -118,9 +93,9 @@ FAT12FS* fat12_mount(BlockDevice* device)
     fs->fat_lba = fs->bs.bpb.reserved_sector_count;
     fs->fat_sectors = fs->bs.bpb.num_fats * fs->bs.bpb.fat_size_16;
     fs->root_dir_lba = fs->fat_lba + fs->fat_sectors;
-    fs->root_dir_sectors = ((fs->bs.bpb.root_entry_count * sizeof(DirectoryEntry)
-                           + fs->bs.bpb.bytes_per_sector - 1)
-                          / fs->bs.bpb.bytes_per_sector);
+    fs->root_dir_sectors = ((fs->bs.bpb.root_entry_count * sizeof(DirectoryEntry))
+        + (fs->bs.bpb.bytes_per_sector - 1))
+        / fs->bs.bpb.bytes_per_sector;
     fs->first_data_lba = fs->root_dir_lba + fs->root_dir_sectors;
     fs->data_cluster_count = total_data_clusters(fs);
 
@@ -167,6 +142,7 @@ Directory* fat12_opendir(FAT12FS* fs, const char* path)
     dir->entries = entries;
     dir->count = count;
     dir->offset = 0;
+
     return dir;
 }
 
@@ -180,10 +156,8 @@ int fat12_readdir(Directory* dir, DirEntry* out)
 
     out->size = raw->file_size;
     out->attr = raw->attr;
-    out->create_time = decode_timestamp(
-        raw->create_time, raw->create_date);
-    out->modify_time = decode_timestamp(
-        raw->last_write_time, raw->last_write_date);
+    out->create_time = decode_timestamp(raw->create_time, raw->create_date);
+    out->modify_time = decode_timestamp(raw->last_write_time, raw->last_write_date);
 
     return 0;
 }
@@ -208,16 +182,15 @@ struct File
 
 File* fat12_open(FAT12FS* fs, const char* path, char mode)
 {
+    /* --- NEW --- */
     /* Only absolute paths are supported: every path must start at "/" */
     if (path[0] != '/') return NULL;
 
     if (mode == 'w')
     {
         int slot;
-        /* --- NEW --- */
         uint16_t parent_cluster;
         if (create_dir_entry(fs, path, &slot, &parent_cluster) != 0) return NULL;
-        /* --- END NEW --- */
 
         File* file = (File*)malloc(sizeof(File));
         file->fs = fs;
@@ -225,12 +198,11 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
         file->size = 0;
         file->position = 0;
         file->mode = 'w';
-        /* --- NEW --- */
         file->dir_cluster = parent_cluster;
-        /* --- END NEW --- */
         file->dir_slot = slot;
         return file;
     }
+    /* --- END NEW --- */
 
     if (mode == 'r')
     {
@@ -245,7 +217,8 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
 
         if (resolved.file_size > 0)
         {
-            data = read_cluster_chain(fs, resolved.first_cluster, &chain_bytes);
+            data = read_cluster_chain(
+                fs, resolved.first_cluster, &chain_bytes);
             if (data == NULL)
             {
                 return NULL;
@@ -306,7 +279,6 @@ int fat12_close(File* file)
             {
                 write_cluster_chain(file->fs, first, file->data, file->size);
                 flush_fats(file->fs);
-                /* --- NEW --- */
                 update_dir_entry(file->fs, file->dir_cluster, file->dir_slot, first, file->size);
             }
             else
@@ -320,11 +292,6 @@ int fat12_close(File* file)
     free(file);
     return result;
 }
-
-/* FAT entry special values */
-#define CLUSTER_END               0xFFF
-
-/* ---- Internal helpers ---- */
 
 static BootSector read_boot_sector(BlockDevice* device)
 {
@@ -341,18 +308,33 @@ static BootSector read_boot_sector(BlockDevice* device)
     return result;
 }
 
+static DirectoryEntry* read_root_directory(
+    FAT12FS* fs,
+    uint32_t* count
+)
+{
+    uint32_t bytes = fs->root_dir_sectors * fs->bs.bpb.bytes_per_sector;
+    *count = bytes / sizeof(DirectoryEntry);
+    DirectoryEntry* entries = (DirectoryEntry*)malloc(bytes);
+    block_device_read(fs->device, fs->root_dir_lba, fs->root_dir_sectors, entries);
+
+    return entries;
+}
+
 static void decode_8_3_name(const DirectoryEntry* raw, char* out)
 {
     int i = 0;
 
+    /* 0x05 escape — real first byte is 0xE5 */
     if (raw->name[0] == 0x05)
-        out[i++] = (char)NAME_DELETED;
+        out[i++] = (char)0xE5;
 
+    /* Copy name bytes until padding or end */
     for (; i < 8 && raw->name[i] != ' '; i++)
         out[i] = raw->name[i];
 
+    /* If extension exists, insert dot and copy non-space bytes */
     int has_ext = raw->ext[0] != ' ';
-
     if (has_ext)
     {
         out[i] = '.';
@@ -366,6 +348,7 @@ static void decode_8_3_name(const DirectoryEntry* raw, char* out)
             }
         }
     }
+
     out[i] = '\0';
 }
 
@@ -400,11 +383,14 @@ static int next_active_entry(
     {
         DirectoryEntry* raw = &entries[*offset];
 
+        /* End-of-directory marker — no more entries after this */
         if (raw->name[0] == NAME_END) return 0;
 
         (*offset)++;
 
+        /* Deleted entry */
         if (is_deleted_entry(raw)) continue;
+        /* Long filename fragment — not a real entry */
         if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
 
         *out = raw;
@@ -414,12 +400,12 @@ static int next_active_entry(
     return 0;
 }
 
-#define CLUSTER_FIRST             0x002
+/* FAT entry special values */
+#define CLUSTER_FIRST            0x002
 
 static uint32_t data_cluster_to_lba(FAT12FS* fs, uint16_t cluster)
 {
-    return ((cluster - CLUSTER_FIRST) * fs->bs.bpb.sectors_per_cluster)
-          + fs->first_data_lba;
+    return fs->first_data_lba + ((cluster - CLUSTER_FIRST) * fs->bs.bpb.sectors_per_cluster);
 }
 
 static uint16_t find_next_cluster(
@@ -431,116 +417,14 @@ static uint16_t find_next_cluster(
 
     if (cluster & 1)
     {
-        return
-            ((fs->fat[offset + 1] << 8) |
-              fs->fat[offset]) >> 4;
+        /* odd cluster: shift right by 4 */
+        return ((fs->fat[offset + 1] << 8) | fs->fat[offset]) >> 4;
     }
     else
     {
-        return
-            ((fs->fat[offset + 1] << 8) |
-              fs->fat[offset]) & 0x0FFF;
+        /* even cluster: mask low 12 bits */
+        return ((fs->fat[offset + 1] << 8) | fs->fat[offset]) & 0x0FFF;
     }
-}
-
-static void str_upper(char* s)
-{
-    for (int i = 0; s[i] != '\0'; i++)
-    {
-        if (s[i] >= 'a' && s[i] <= 'z')
-            s[i] -= 32;
-    }
-}
-
-static void set_next_cluster(
-    uint8_t* fat,
-    uint16_t cluster,
-    uint16_t value
-)
-{
-    uint32_t offset = cluster + (cluster / 2);
-
-    if (cluster & 1)
-    {
-        fat[offset]     = (fat[offset] & 0x0F) | ((value & 0x0F) << 4);
-        fat[offset + 1] = (value >> 4) & 0xFF;
-    }
-    else
-    {
-        fat[offset]     = value & 0xFF;
-        fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((value >> 8) & 0x0F);
-    }
-}
-
-static uint16_t time_encode(const Timestamp* dt)
-{
-    return (dt->hours << 11) | (dt->minutes << 5) | (dt->seconds / 2);
-}
-
-static uint16_t date_encode(const Timestamp* dt)
-{
-    return ((dt->year - 1980) << 9) | (dt->month << 5) | dt->day;
-}
-
-static int find_free_entry(DirectoryEntry* entries, uint32_t count)
-{
-    for (uint32_t i = 0; i < count; i++)
-    {
-        if (entries[i].name[0] == NAME_END ||
-            is_deleted_entry(&entries[i]))
-        {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static void encode_8_3_name(DirectoryEntry* entry, const char* name)
-{
-    char name_copy[64];
-    strncpy(name_copy, name, sizeof(name_copy) - 1);
-    name_copy[sizeof(name_copy) - 1] = '\0';
-
-    memset(entry->name, 0, 8);
-    memset(entry->ext, 0, 3);
-
-    char* dot = strchr(name_copy, '.');
-    if (dot)
-    {
-        *dot = '\0';
-        strncpy(entry->ext, dot + 1, 3);
-    }
-
-    strncpy(entry->name, name_copy, 8);
-
-    for (int i = 0; i < 8; i++)
-        if (entry->name[i] == '\0')
-            entry->name[i] = ' ';
-
-    for (int i = 0; i < 3; i++)
-        if (entry->ext[i] == '\0')
-            entry->ext[i] = ' ';
-
-    /* 0x05 escape: if the first character is NAME_DELETED (0xE5),
-       store 0x05 instead so it is not mistaken for a deleted entry on disk */
-    if (is_deleted_entry(entry))
-        entry->name[0] = 0x05;
-}
-
-static DirectoryEntry* read_root_directory(
-    FAT12FS* fs,
-    uint32_t* count
-)
-{
-    uint32_t bytes = fs->root_dir_sectors * fs->bs.bpb.bytes_per_sector;
-    *count = bytes / sizeof(DirectoryEntry);
-
-    DirectoryEntry* entries =
-        (DirectoryEntry*)malloc(bytes);
-
-    block_device_read(fs->device, fs->root_dir_lba, fs->root_dir_sectors, entries);
-
-    return entries;
 }
 
 static uint8_t* read_cluster_chain(
@@ -568,8 +452,7 @@ static uint8_t* read_cluster_chain(
         {
             capacity = capacity ? capacity * 2 : 4096;
             if (capacity < needed) capacity = needed;
-            all = (uint8_t*)realloc(
-                all, capacity);
+            all = (uint8_t*)realloc(all, capacity);
         }
 
         memcpy(all + max_bytes, buf, cluster_bytes);
@@ -583,6 +466,15 @@ static uint8_t* read_cluster_chain(
     return all;
 }
 
+static void str_upper(char* s)
+{
+    for (int i = 0; s[i] != '\0'; i++)
+    {
+        if (s[i] >= 'a' && s[i] <= 'z')
+            s[i] -= 32; // lowercase letters are 32 above uppercase in ASCII
+    }
+}
+
 static DirectoryEntry* read_directory_entries(
     FAT12FS* fs,
     uint16_t first_cluster,
@@ -590,8 +482,7 @@ static DirectoryEntry* read_directory_entries(
 )
 {
     uint32_t bytes;
-    uint8_t* raw = read_cluster_chain(
-        fs, first_cluster, &bytes);
+    uint8_t* raw = read_cluster_chain(fs, first_cluster, &bytes);
 
     if (raw == NULL)
     {
@@ -601,164 +492,6 @@ static DirectoryEntry* read_directory_entries(
 
     *count = bytes / sizeof(DirectoryEntry);
     return (DirectoryEntry*)raw;
-}
-
-static DirectoryEntry* read_directory(
-    FAT12FS* fs,
-    uint16_t cluster,
-    uint32_t* out_count
-)
-{
-    if (cluster == ROOT_DIR_CLUSTER)
-    {
-        return read_root_directory(fs, out_count);
-    }
-    /* --- NEW --- */
-    return read_directory_entries(fs, cluster, out_count);
-}
-
-#define CLUSTER_FREE              0x000
-
-static uint16_t allocate_cluster_chain(
-    FAT12FS* fs,
-    uint32_t needed_bytes,
-    uint32_t* out_chain_bytes
-)
-{
-    uint32_t cluster_bytes = fs->bs.bpb.sectors_per_cluster *
-                             fs->bs.bpb.bytes_per_sector;
-    uint32_t needed_clusters =
-        (needed_bytes + cluster_bytes - 1) / cluster_bytes;
-
-    DBG_PRINT("[ fat12        ] allocating %u cluster(s) for %u bytes\n", needed_clusters, needed_bytes);
-
-    uint16_t* clusters = (uint16_t*)malloc(needed_clusters * sizeof(uint16_t));
-
-    /* Phase 1: scan the FAT and collect free cluster numbers. */
-    uint32_t found = 0;
-    for (uint16_t c = CLUSTER_FIRST; (uint32_t)(c - CLUSTER_FIRST) < fs->data_cluster_count && found < needed_clusters; c++)
-    {
-        if (find_next_cluster(fs, c) == CLUSTER_FREE)
-            clusters[found++] = c;
-    }
-
-    /* Not enough free clusters — nothing touched the FAT. */
-    if (found < needed_clusters)
-    {
-        free(clusters);
-        *out_chain_bytes = 0;
-        return 0;
-    }
-
-    /* Phase 2: link the collected clusters into a chain. */
-    for (uint32_t i = 0; i < needed_clusters; i++)
-    {
-        uint16_t next = (i == needed_clusters - 1) ? CLUSTER_END : clusters[i + 1];
-        DBG_PRINT("[ fat12        ] allocate cluster %u%s\n", clusters[i], i == 0 ? " (first)" : "");
-        set_next_cluster(fs->fat, clusters[i], next);
-    }
-
-    *out_chain_bytes = needed_clusters * cluster_bytes;
-    uint16_t first = clusters[0];
-    free(clusters);
-
-    return first;
-}
-
-static void write_cluster_chain(
-    FAT12FS* fs,
-    uint16_t first_cluster,
-    const uint8_t* data,
-    uint32_t size
-)
-{
-    uint32_t cluster_bytes = fs->bs.bpb.sectors_per_cluster *
-                             fs->bs.bpb.bytes_per_sector;
-    uint32_t remaining = size;
-    uint16_t cluster = first_cluster;
-
-    while (cluster >= CLUSTER_FIRST && (uint32_t)(cluster - CLUSTER_FIRST) < fs->data_cluster_count && remaining > 0)
-    {
-        uint32_t lba = data_cluster_to_lba(fs, cluster);
-        DBG_PRINT("[ fat12        ] write cluster %u\n", cluster);
-        uint32_t chunk = remaining < cluster_bytes
-                       ? remaining : cluster_bytes;
-
-        uint8_t* buf = (uint8_t*)calloc(1, cluster_bytes);
-        memcpy(buf, data + (size - remaining), chunk);
-        block_device_write(fs->device, lba,
-            fs->bs.bpb.sectors_per_cluster, buf);
-        free(buf);
-
-        remaining -= chunk;
-        cluster = find_next_cluster(fs, cluster);
-    }
-}
-
-static void flush_fats(FAT12FS* fs)
-{
-    for (int i = 0; i < fs->bs.bpb.num_fats; i++)
-    {
-        block_device_write(
-            fs->device,
-            fs->fat_lba + (i * fs->bs.bpb.fat_size_16),
-            fs->bs.bpb.fat_size_16,
-            fs->fat
-        );
-    }
-}
-
-static void set_entry_timestamps(DirectoryEntry* entry)
-{
-    Timestamp dt = { .year = 2024, .month = 1, .day = 1,
-                     .hours = 12, .minutes = 0, .seconds = 0 };
-    entry->create_date      = date_encode(&dt);
-    entry->create_time      = time_encode(&dt);
-    entry->last_write_date  = date_encode(&dt);
-    entry->last_write_time  = time_encode(&dt);
-    entry->last_access_date = date_encode(&dt);
-}
-
-static DirectoryEntry* find_entry_by_name(
-    DirectoryEntry* entries,
-    uint32_t count,
-    const char* name
-)
-{
-    uint32_t i = 0;
-    DirectoryEntry* raw;
-    while (next_active_entry(entries, count, &i, &raw))
-    {
-        if (raw->attr == FAT12_ATTR_VOLUME_ID) continue;
-
-        char entry_name[13];
-        decode_8_3_name(raw, entry_name);
-
-        if (strcmp(entry_name, name) == 0)
-            return raw;
-    }
-    return NULL;
-}
-
-static void write_directory(
-    FAT12FS* fs,
-    uint16_t parent_cluster,
-    DirectoryEntry* entries,
-    uint32_t count
-)
-{
-    if (parent_cluster == ROOT_DIR_CLUSTER)
-    {
-        block_device_write(
-            fs->device, fs->root_dir_lba,
-            fs->root_dir_sectors, entries);
-    }
-    else
-    {
-        write_cluster_chain(fs, parent_cluster,
-            (uint8_t*)entries,
-            count * sizeof(DirectoryEntry));
-    }
 }
 
 static int resolve_path(
@@ -835,6 +568,110 @@ static int resolve_path(
     }
 }
 
+static DirectoryEntry* read_directory(
+    FAT12FS* fs,
+    uint16_t cluster,
+    uint32_t* out_count
+)
+{
+    if (cluster == ROOT_DIR_CLUSTER)
+    {
+        return read_root_directory(fs, out_count);
+    }
+    /* --- NEW --- */
+    return read_directory_entries(fs, cluster, out_count);
+}
+
+static DirectoryEntry* find_entry_by_name(
+    DirectoryEntry* entries,
+    uint32_t count,
+    const char* name
+)
+{
+    uint32_t i = 0;
+    DirectoryEntry* raw;
+    while (next_active_entry(entries, count, &i, &raw))
+    {
+        if (raw->attr == FAT12_ATTR_VOLUME_ID) continue;
+
+        char entry_name[13];
+        decode_8_3_name(raw, entry_name);
+
+        if (strcmp(entry_name, name) == 0)
+            return raw;
+    }
+    return NULL;
+}
+
+static int find_free_entry(DirectoryEntry* entries, uint32_t count)
+{
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (entries[i].name[0] == NAME_END ||
+            is_deleted_entry(&entries[i]))
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void encode_8_3_name(DirectoryEntry* entry, const char* name)
+{
+    char name_copy[64];
+    strncpy(name_copy, name, sizeof(name_copy) - 1);
+    name_copy[sizeof(name_copy) - 1] = '\0';
+
+    memset(entry->name, 0, 8);
+    memset(entry->ext, 0, 3);
+
+    char* dot = strchr(name_copy, '.');
+    if (dot)
+    {
+        *dot = '\0';
+        strncpy(entry->ext, dot + 1, 3);
+    }
+
+    strncpy(entry->name, name_copy, 8);
+
+    for (int i = 0; i < 8; i++)
+        if (entry->name[i] == '\0')
+            entry->name[i] = ' ';
+
+    for (int i = 0; i < 3; i++)
+        if (entry->ext[i] == '\0')
+            entry->ext[i] = ' ';
+
+    /* 0x05 escape: if the first character is NAME_DELETED (0xE5),
+       store 0x05 instead so it is not mistaken for a deleted entry on disk */
+    if (is_deleted_entry(entry))
+        entry->name[0] = 0x05;
+}
+
+static uint16_t time_encode(const Timestamp* dt)
+{
+    return (dt->hours << 11) | (dt->minutes << 5) | (dt->seconds / 2);
+}
+
+static uint16_t date_encode(const Timestamp* dt)
+{
+    return ((dt->year - 1980) << 9) | (dt->month << 5) | dt->day;
+}
+
+static void set_entry_timestamps(DirectoryEntry* entry)
+{
+    /* In production, read the real-time clock and encode via
+       time_encode/date_encode. We hard-code a reference
+       timestamp to keep the focus on FAT12, not platform plumbing. */
+    Timestamp dt = { .year = 2024, .month = 1, .day = 1,
+                     .hours = 12, .minutes = 0, .seconds = 0 };
+    entry->create_date      = date_encode(&dt);
+    entry->create_time      = time_encode(&dt);
+    entry->last_write_date  = date_encode(&dt);
+    entry->last_write_time  = time_encode(&dt);
+    entry->last_access_date = date_encode(&dt);
+}
+
 static int get_parent_and_name(
     const char* path,
     char* out_parent,
@@ -857,15 +694,32 @@ static int get_parent_and_name(
     return 0;
 }
 
+static void write_directory(
+    FAT12FS* fs,
+    uint16_t parent_cluster,
+    DirectoryEntry* entries,
+    uint32_t count
+)
+{
+    if (parent_cluster == ROOT_DIR_CLUSTER)
+    {
+        block_device_write(
+            fs->device, fs->root_dir_lba,
+            fs->root_dir_sectors, entries);
+    }
+    else
+    {
+        write_cluster_chain(fs, parent_cluster, (uint8_t*)entries, count * sizeof(DirectoryEntry));
+    }
+}
+
 static int create_dir_entry(
     FAT12FS* fs,
     const char* path,
     int* out_slot,
-    /* --- NEW --- */
     uint16_t* out_parent_cluster
 )
 {
-    /* --- NEW --- */
     char parent_dir[256];
     char name[13];
 
@@ -881,7 +735,6 @@ static int create_dir_entry(
 
     uint32_t count;
     DirectoryEntry* entries = read_directory(fs, *out_parent_cluster, &count);
-    /* --- END NEW --- */
     if (entries == NULL) return -1;
 
     if (find_entry_by_name(entries, count, name) != NULL)
@@ -904,19 +757,124 @@ static int create_dir_entry(
     entry->attr = FAT12_ATTR_ARCHIVE;
     set_entry_timestamps(entry);
 
-    /* --- NEW --- */
-    write_directory(fs,
-        *out_parent_cluster, entries, count);
-    /* --- END NEW --- */
+    write_directory(fs, *out_parent_cluster, entries, count);
 
     free(entries);
     *out_slot = slot;
     return 0;
 }
 
+static void set_next_cluster(
+    uint8_t* fat,
+    uint16_t cluster,
+    uint16_t value
+)
+{
+    uint32_t offset = cluster + (cluster / 2);
+
+    if (cluster & 1)
+    {
+        /* odd cluster: write high nibble, write next byte */
+        fat[offset] = (fat[offset] & 0x0F) | ((value & 0x0F) << 4);
+        fat[offset + 1] = (value >> 4) & 0xFF;
+    }
+    else
+    {
+        /* even cluster: write low byte, write low nibble of next byte */
+        fat[offset] = value & 0xFF;
+        fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((value >> 8) & 0x0F);
+    }
+}
+
+#define CLUSTER_FREE             0x000
+#define CLUSTER_END              0xFFF
+
+static uint16_t allocate_cluster_chain(
+    FAT12FS* fs,
+    uint32_t needed_bytes,
+    uint32_t* out_chain_bytes
+)
+{
+    uint32_t cluster_bytes = fs->bs.bpb.sectors_per_cluster * fs->bs.bpb.bytes_per_sector;
+    uint32_t needed_clusters = (needed_bytes + cluster_bytes - 1) / cluster_bytes;
+
+    DBG_PRINT("[ fat12        ] allocating %u cluster(s) for %u bytes\n", needed_clusters, needed_bytes);
+
+    uint16_t* clusters = (uint16_t*)malloc(needed_clusters * sizeof(uint16_t));
+
+    /* Phase 1: scan the FAT and collect free cluster numbers. */
+    uint32_t found = 0;
+    for (uint16_t c = CLUSTER_FIRST; (uint32_t)(c - CLUSTER_FIRST) < fs->data_cluster_count && found < needed_clusters; c++)
+    {
+        if (find_next_cluster(fs, c) == CLUSTER_FREE)
+            clusters[found++] = c;
+    }
+
+    /* Not enough free clusters — nothing touched the FAT. */
+    if (found < needed_clusters)
+    {
+        free(clusters);
+        *out_chain_bytes = 0;
+        return 0;
+    }
+
+    /* Phase 2: link the collected clusters into a chain. */
+    for (uint32_t i = 0; i < needed_clusters; i++)
+    {
+        uint16_t next = (i == needed_clusters - 1) ? CLUSTER_END : clusters[i + 1];
+        DBG_PRINT("[ fat12        ] allocate cluster %u%s\n", clusters[i], i == 0 ? " (first)" : "");
+        set_next_cluster(fs->fat, clusters[i], next);
+    }
+
+    *out_chain_bytes = needed_clusters * cluster_bytes;
+    uint16_t first = clusters[0];
+    free(clusters);
+
+    return first;
+}
+
+static void write_cluster_chain(
+    FAT12FS* fs,
+    uint16_t first_cluster,
+    const uint8_t* data,
+    uint32_t size
+)
+{
+    uint32_t cluster_bytes = fs->bs.bpb.sectors_per_cluster * fs->bs.bpb.bytes_per_sector;
+    uint32_t remaining = size;
+    uint16_t cluster = first_cluster;
+
+    while (cluster >= CLUSTER_FIRST && (uint32_t)(cluster - CLUSTER_FIRST) < fs->data_cluster_count && remaining > 0)
+    {
+        uint32_t lba = data_cluster_to_lba(fs, cluster);
+        DBG_PRINT("[ fat12        ] write cluster %u\n", cluster);
+        uint32_t chunk = remaining < cluster_bytes ? remaining : cluster_bytes;
+
+        uint8_t* buf = (uint8_t*)calloc(1, cluster_bytes);
+        memcpy(buf, data + (size - remaining), chunk);
+        block_device_write(fs->device, lba, fs->bs.bpb.sectors_per_cluster, buf);
+        free(buf);
+
+        remaining -= chunk;
+        cluster = find_next_cluster(fs, cluster);
+    }
+}
+
+static void flush_fats(FAT12FS* fs)
+{
+    for (int i = 0; i < fs->bs.bpb.num_fats; i++)
+    {
+        block_device_write(
+            fs->device,
+            fs->fat_lba + (i * fs->bs.bpb.fat_size_16),
+            fs->bs.bpb.fat_size_16,
+            fs->fat
+        );
+    }
+}
+
 static int update_dir_entry(
     FAT12FS* fs,
-    /* --- NEW --- */
     uint16_t parent_cluster,
     int slot,
     uint16_t first_cluster,
@@ -924,16 +882,13 @@ static int update_dir_entry(
 )
 {
     uint32_t count;
-    /* --- NEW --- */
     DirectoryEntry* entries = read_directory(fs, parent_cluster, &count);
     if (entries == NULL) return -1;
 
     entries[slot].first_cluster = first_cluster;
     entries[slot].file_size = file_size;
 
-    /* --- NEW --- */
     write_directory(fs, parent_cluster, entries, count);
-    /* --- END NEW --- */
 
     free(entries);
     return 0;

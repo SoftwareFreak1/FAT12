@@ -8,7 +8,6 @@ typedef struct FAT12FS FAT12FS;
 FAT12FS* fat12_mount(BlockDevice* device);
 void fat12_umount(FAT12FS* fs);
 
-/* File attribute flags */
 #define FAT12_ATTR_READ_ONLY   0x01
 #define FAT12_ATTR_HIDDEN      0x02
 #define FAT12_ATTR_SYSTEM      0x04

@@ -56,8 +56,7 @@ int fat12_remove(FAT12FS* fs, const char* path);
 int fat12_move(FAT12FS* fs, const char* old_path, const char* new_path);
 
 typedef struct {
-    char volume_label[12];  /* up to 11 chars; right-padded with spaces */
-
+    char volume_label[12];
     /* Any other customization/parameter we want to add can go here */
 } FormatParams;
 

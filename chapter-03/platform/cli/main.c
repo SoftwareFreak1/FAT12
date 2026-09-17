@@ -6,8 +6,7 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_timestamp(char *buf, size_t size,
-                            Timestamp ts)
+static void format_timestamp(char *buf, size_t size, Timestamp ts)
 {
     snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u", ts.year, ts.month, ts.day, ts.hours, ts.minutes, ts.seconds);
 }
@@ -79,5 +78,6 @@ int main(int argc, char *argv[])
 
     fat12_umount(fs);
     block_device_close(device);
+
     return ret;
 }

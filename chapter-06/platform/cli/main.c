@@ -6,11 +6,10 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_timestamp(char *buf, size_t size, Timestamp ts)
+static void format_timestamp(char *buf, size_t size,
+                            Timestamp ts)
 {
-    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u",
-             ts.year, ts.month, ts.day,
-             ts.hours, ts.minutes, ts.seconds);
+    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u", ts.year, ts.month, ts.day, ts.hours, ts.minutes, ts.seconds);
 }
 
 static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
@@ -57,6 +56,7 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
         fprintf(stderr, "usage: %s cat <path>\n", argv[0]);
         return 1;
     }
+
     const char *path = argv[2];
     File *file = fat12_open(fs, path, 'r');
     if (file == NULL)

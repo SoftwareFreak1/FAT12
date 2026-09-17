@@ -313,14 +313,14 @@ static int next_active_entry(
     {
         DirectoryEntry* raw = &entries[*offset];
 
-        /* End-of-directory marker -- no more entries after this */
+        /* End-of-directory marker — no more entries after this */
         if (raw->name[0] == NAME_END) return 0;
 
         (*offset)++;
 
         /* Deleted entry */
         if (is_deleted_entry(raw)) continue;
-        /* Long filename fragment -- not a real entry */
+        /* Long filename fragment — not a real entry */
         if (raw->attr == FAT12_ATTR_LONG_NAME) continue;
 
         *out = raw;

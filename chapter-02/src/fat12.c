@@ -5,28 +5,32 @@
 #include "layout.h"
 #include "fat12.h"
 
-struct FAT12FS {
-    BlockDevice* device;
-    BootSector bs;
-};
-
 static BootSector read_boot_sector(BlockDevice* device)
 {
     uint32_t sector_size = block_device_sector_size(device);
     void* buffer = malloc(sector_size);
     block_device_read(device, 0, 1, buffer);
+
     BootSector result;
     memcpy(&result, buffer, sizeof(BootSector));
     free(buffer);
+
     return result;
 }
 
+struct FAT12FS {
+    BlockDevice* device;
+    BootSector bs;
+};
+
 FAT12FS* fat12_mount(BlockDevice* device)
 {
+    DBG_PRINT("[ fat12        ] --- fat12_mount() ---\n");
     FAT12FS* fs = malloc(sizeof(FAT12FS));
     fs->device = device;
     fs->bs = read_boot_sector(device);
 
+    /* jump, boot_code, reserved_nt: not used by FAT itself, so we skip them */
     DBG_PRINT("[ fat12        ] OEM Name: %.8s\n", fs->bs.oem_name);
     DBG_PRINT("[ fat12        ] Bytes Per Sector: %u\n", fs->bs.bpb.bytes_per_sector);
     DBG_PRINT("[ fat12        ] Sectors Per Cluster: %u\n", fs->bs.bpb.sectors_per_cluster);
@@ -45,6 +49,7 @@ FAT12FS* fat12_mount(BlockDevice* device)
     DBG_PRINT("[ fat12        ] Volume ID: 0x%08x\n", fs->bs.extended_bpb.volume_id);
     DBG_PRINT("[ fat12        ] Volume Label: %.11s\n", fs->bs.extended_bpb.volume_label);
     DBG_PRINT("[ fat12        ] File System Type: %.8s\n", fs->bs.extended_bpb.file_system_type);
+    DBG_PRINT("[ fat12        ] Signature: 0x%04x\n", fs->bs.signature);
 
     return fs;
 }

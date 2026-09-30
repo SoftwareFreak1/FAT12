@@ -12,7 +12,7 @@ PHDRS
 /* Lays out where each section goes in the final kernel binary */
 SECTIONS
 {
-    /* Our kernel binary starts loading here — an address Multiboot loaders guarantee is free RAM */
+    /* Our kernel binary starts loading here — the standard convention for avoiding the BIOS/VGA memory hole below 1 MB */
     . = 1M;
 
     /* Groups the kernel's code, read-only data, and writable data/bss into their own PT_LOAD segments, each with only the permissions it needs */

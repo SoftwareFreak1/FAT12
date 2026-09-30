@@ -6,16 +6,11 @@
 #include "fat12.h"
 #include "file_block_device.h"
 
-static void format_timestamp(char *buf, size_t size, Timestamp ts)
-{
-    snprintf(buf, size, "%04u-%02u-%02u %02u:%02u:%02u", ts.year, ts.month, ts.day, ts.hours, ts.minutes, ts.seconds);
-}
-
 static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
 {
-    if (argc < 3)
+    if (argc != 3)
     {
-        fprintf(stderr, "usage: %s ls <path>\n", argv[0]);
+        fprintf(stderr, "usage: ls <path>\n");
         return 1;
     }
 
@@ -27,21 +22,28 @@ static int cmd_ls(FAT12FS *fs, int argc, char *argv[])
         return 1;
     }
 
+    printf("%-12s  %-9s  %-19s  %-19s\n", "NAME", "TYPE/SIZE", "CREATED", "MODIFIED");
+
     DirEntry entry;
     while (fat12_readdir(dir, &entry) == 0)
     {
-        char time_str[20];
         char type_str[16];
-        format_timestamp(time_str, sizeof(time_str), entry.modify_time);
 
-        if (entry.attr == FAT12_ATTR_VOLUME_ID)
+        if (entry.kind == ENTRY_VOLUME_LABEL)
             snprintf(type_str, sizeof(type_str), "<VOL>");
-        else if (entry.attr & FAT12_ATTR_DIRECTORY)
+        else if (entry.kind == ENTRY_DIRECTORY)
             snprintf(type_str, sizeof(type_str), "<DIR>");
         else
             snprintf(type_str, sizeof(type_str), "%u B", entry.size);
 
-        printf("%-12s  %-8s  %s\n", entry.name, type_str, time_str);
+        printf(
+            "%-12s  %-9s  %04u-%02u-%02u %02u:%02u:%02u  %04u-%02u-%02u %02u:%02u:%02u\n",
+            entry.name, type_str,
+            entry.create_time.year, entry.create_time.month, entry.create_time.day,
+            entry.create_time.hours, entry.create_time.minutes, entry.create_time.seconds,
+            entry.modify_time.year, entry.modify_time.month, entry.modify_time.day,
+            entry.modify_time.hours, entry.modify_time.minutes, entry.modify_time.seconds
+        );
     }
 
     fat12_closedir(dir);
@@ -52,7 +54,7 @@ int main(int argc, char *argv[])
 {
     if (argc < 2)
     {
-        fprintf(stderr, "usage: %s <command>\n", argv[0]);
+        fprintf(stderr, "usage: <command>\n");
         return 1;
     }
 

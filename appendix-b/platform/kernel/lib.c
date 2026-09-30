@@ -7,19 +7,19 @@
 
 static unsigned char g_heap[HEAP_SIZE];
 
-typedef struct block_header {
+typedef struct BlockHeader {
     size_t size;
     int free;
-    struct block_header* next;
-} block_header_t;
+    struct BlockHeader* next;
+} BlockHeader;
 
-static block_header_t* free_list = NULL;
+static BlockHeader* free_list = NULL;
 
 static void heap_init(void)
 {
     if (free_list != NULL) return;
-    free_list = (block_header_t*)g_heap;
-    free_list->size = HEAP_SIZE - sizeof(block_header_t);
+    free_list = (BlockHeader*)g_heap;
+    free_list->size = HEAP_SIZE - sizeof(BlockHeader);
     free_list->free = 1;
     free_list->next = NULL;
 }
@@ -29,19 +29,19 @@ void* malloc(size_t size)
     if (size == 0) return NULL;
     heap_init();
 
-    block_header_t* current = free_list;
+    BlockHeader* current = free_list;
 
     while (current != NULL)
     {
         if (current->free && current->size >= size)
         {
-            if (current->size > size + sizeof(block_header_t))
+            if (current->size > size + sizeof(BlockHeader))
             {
-                block_header_t* new_block =
-                    (block_header_t*)((unsigned char*)current +
-                        sizeof(block_header_t) + size);
+                BlockHeader* new_block =
+                    (BlockHeader*)((unsigned char*)current +
+                        sizeof(BlockHeader) + size);
                 new_block->size =
-                    current->size - size - sizeof(block_header_t);
+                    current->size - size - sizeof(BlockHeader);
                 new_block->free = 1;
                 new_block->next = current->next;
 
@@ -50,7 +50,7 @@ void* malloc(size_t size)
             }
 
             current->free = 0;
-            return (unsigned char*)current + sizeof(block_header_t);
+            return (unsigned char*)current + sizeof(BlockHeader);
         }
 
         current = current->next;
@@ -63,16 +63,16 @@ void free(void* ptr)
 {
     if (ptr == NULL) return;
 
-    block_header_t* block =
-        (block_header_t*)((unsigned char*)ptr - sizeof(block_header_t));
+    BlockHeader* block =
+        (BlockHeader*)((unsigned char*)ptr - sizeof(BlockHeader));
     block->free = 1;
 
-    block_header_t* current = free_list;
+    BlockHeader* current = free_list;
     while (current != NULL && current->next != NULL)
     {
         if (current->free && current->next->free)
         {
-            current->size += sizeof(block_header_t) + current->next->size;
+            current->size += sizeof(BlockHeader) + current->next->size;
             current->next = current->next->next;
         }
         current = current->next;
@@ -101,8 +101,8 @@ void* realloc(void* ptr, size_t size)
         return NULL;
     }
 
-    block_header_t* block =
-        (block_header_t*)((unsigned char*)ptr - sizeof(block_header_t));
+    BlockHeader* block =
+        (BlockHeader*)((unsigned char*)ptr - sizeof(BlockHeader));
     size_t old_size = block->size;
 
     void* new_ptr = malloc(size);
@@ -183,6 +183,19 @@ int strncmp(const char* s1, const char* s2, size_t n)
 char* strcpy(char* dest, const char* src)
 {
     char* d = dest;
+
+    while ((*d++ = *src++) != '\0')
+        ;
+
+    return dest;
+}
+
+char* strcat(char* dest, const char* src)
+{
+    char* d = dest;
+
+    while (*d != '\0')
+        d++;
 
     while ((*d++ = *src++) != '\0')
         ;

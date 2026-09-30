@@ -8,8 +8,7 @@
 #define SECTOR_SIZE    512
 #define RAM_DISK_SIZE  (4 * 1024 * 1024)  /* 4 MiB */
 
-struct BlockDevice
-{
+struct BlockDevice {
     uint8_t data[RAM_DISK_SIZE];
 };
 
@@ -39,9 +38,10 @@ int block_device_write(
     return 0;
 }
 
-void block_device_close(BlockDevice* device)
+int block_device_close(BlockDevice* device)
 {
     free(device);
+    return 0;
 }
 
 uint32_t block_device_sector_size(BlockDevice* device)

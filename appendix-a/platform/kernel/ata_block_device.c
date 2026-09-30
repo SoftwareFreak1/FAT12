@@ -120,8 +120,7 @@ static inline void ata_issue_command(uint8_t command, uint32_t lba, uint8_t sect
 #define ATA_COMMAND_IDENTIFY  0xEC
 #define ATA_STATUS_DATA_REQUEST  0x08
 
-struct BlockDevice
-{
+struct BlockDevice {
     uint32_t sector_size;
     uint64_t sector_count;
 };
@@ -209,7 +208,8 @@ uint64_t block_device_sector_count(BlockDevice* device)
     return device->sector_count;
 }
 
-void block_device_close(BlockDevice* device)
+int block_device_close(BlockDevice* device)
 {
     free(device);
+    return 0;
 }

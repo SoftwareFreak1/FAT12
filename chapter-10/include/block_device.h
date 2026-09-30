@@ -21,6 +21,6 @@ int block_device_write(
 
 uint32_t block_device_sector_size(BlockDevice* device);
 uint64_t block_device_sector_count(BlockDevice* device);
-void block_device_close(BlockDevice* device);
+int block_device_close(BlockDevice* device);
 
 #endif

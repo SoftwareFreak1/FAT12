@@ -8,13 +8,6 @@ typedef struct FAT12FS FAT12FS;
 FAT12FS* fat12_mount(BlockDevice* device);
 void fat12_umount(FAT12FS* fs);
 
-#define FAT12_ATTR_READ_ONLY   0x01
-#define FAT12_ATTR_HIDDEN      0x02
-#define FAT12_ATTR_SYSTEM      0x04
-#define FAT12_ATTR_VOLUME_ID   0x08
-#define FAT12_ATTR_DIRECTORY   0x10
-#define FAT12_ATTR_ARCHIVE     0x20
-
 typedef struct {
     unsigned year;
     unsigned month;
@@ -24,10 +17,16 @@ typedef struct {
     unsigned seconds;
 } Timestamp;
 
+typedef enum {
+    ENTRY_FILE,
+    ENTRY_DIRECTORY,
+    ENTRY_VOLUME_LABEL
+} EntryKind;
+
 typedef struct {
     char name[13];
     uint32_t size;
-    uint8_t attr;
+    EntryKind kind;
     Timestamp create_time;
     Timestamp modify_time;
 } DirEntry;

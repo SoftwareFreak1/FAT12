@@ -34,15 +34,13 @@ typedef struct {
     char oem_name[8];
     BPB bpb;
     ExtendedBPB extended_bpb;
-    uint8_t  boot_code[448];
+    uint8_t boot_code[448];
     uint16_t signature;
 } BootSector;
 
-typedef struct
-{
-    char name[8];
-    char ext[3];
-    uint8_t attr;
+typedef struct {
+    char name[11];
+    uint8_t attributes;
     uint8_t reserved;
     uint8_t create_time_tenth;
     uint16_t create_time;
@@ -55,11 +53,10 @@ typedef struct
     uint32_t file_size;
 } DirectoryEntry;
 
-typedef struct
-{
+typedef struct {
     uint8_t sequence;
     uint16_t name1[5];
-    uint8_t attr;
+    uint8_t attributes;
     uint8_t type;
     uint8_t checksum;
     uint16_t name2[6];

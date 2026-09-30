@@ -1,4 +1,5 @@
 #!/bin/bash
+rm -f *.o
 for f in src/*.c platform/kernel/*.c; do
     gcc -m32 -ffreestanding -O0 -Wall -Wextra -iquote include -iquote src -iquote platform/kernel -c "$f"
 done

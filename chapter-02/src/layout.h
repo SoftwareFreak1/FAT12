@@ -34,7 +34,7 @@ typedef struct {
     char oem_name[8];
     BPB bpb;
     ExtendedBPB extended_bpb;
-    uint8_t  boot_code[448];
+    uint8_t boot_code[448];
     uint16_t signature;
 } BootSector;
 

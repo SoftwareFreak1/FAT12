@@ -68,8 +68,9 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
 
     uint8_t buf[512];
     uint32_t bytes;
-    while ((bytes = fat12_read(file, buf, sizeof(buf))) > 0)
+    while ((bytes = fat12_read(file, buf, sizeof(buf))) > 0) {
         fwrite(buf, 1, bytes, stdout);
+    }
 
     fat12_close(file);
     return 0;
@@ -114,6 +115,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Hardcoded so every command stays short */
     BlockDevice *device = file_block_device_open("disk.img");
     if (device == NULL)
     {
@@ -126,14 +128,13 @@ int main(int argc, char *argv[])
     char *command = argv[1];
     int ret = 0;
 
-    if (strcmp(command, "ls") == 0)
+    if (strcmp(command, "ls") == 0) {
         ret = cmd_ls(fs, argc, argv);
-    else if (strcmp(command, "cat") == 0)
+    } else if (strcmp(command, "cat") == 0) {
         ret = cmd_cat(fs, argc, argv);
-    else if (strcmp(command, "create") == 0)
+    } else if (strcmp(command, "create") == 0) {
         ret = cmd_create(fs, argc, argv);
-    else
-    {
+    } else {
         fprintf(stderr, "unknown command: %s\n", command);
         ret = 1;
     }

@@ -260,3 +260,13 @@ char* strdup(const char* s)
 
     return copy;
 }
+
+/* --- Character functions --- */
+
+int toupper(int c)
+{
+    if (c >= 'a' && c <= 'z')
+        return c - ('a' - 'A');
+
+    return c;
+}

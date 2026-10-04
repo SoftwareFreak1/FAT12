@@ -3,6 +3,7 @@
 
 #if DEBUG
 #include <stdio.h>
+
 #define DBG_PRINT(...) \
     do { \
         printf("\033[36m"); \

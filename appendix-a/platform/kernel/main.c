@@ -10,16 +10,18 @@ void kernel_main(void)
 {
     vga_clear();
     vga_print("FAT12 kernel booted\n\n");
+    vga_print("Opening block device ..... ");
     BlockDevice* device = ata_block_device_open();
     if (device == NULL)
     {
-        vga_print("Disk not found\n");
+        vga_print("FAILED\n");
         return;
     }
+    vga_print("OK\n");
 
     /* Format a fresh volume */
     vga_print("Formatting volume ........ ");
-    FormatParams params = { "KERNEL" };
+    FormatParams params = { "FAT12VOL" };
     if (fat12_format(device, params) != 0)
     {
         vga_print("FAILED\n");
@@ -99,5 +101,13 @@ void kernel_main(void)
 
     vga_print("Unmounting volume ........ ");
     fat12_umount(fs);
+    vga_print("OK\n");
+
+    vga_print("Closing block device ..... ");
+    if (block_device_close(device) != 0)
+    {
+        vga_print("FAILED\n");
+        return;
+    }
     vga_print("OK\n");
 }

@@ -9,6 +9,7 @@
 #define VOLUME_LABEL_OFFSET 0x2b
 
 int main(void) {
+    /* Hardcoded so every command stays short */
     BlockDevice* device = file_block_device_open("disk.img");
     if (device == NULL) {
         fprintf(stderr, "error: could not open disk.img\n");

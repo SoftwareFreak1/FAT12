@@ -135,6 +135,7 @@ static Timestamp decode_timestamp(uint16_t time, uint16_t date)
 
 static DirectoryEntry* read_root_directory(FAT12FS* fs)
 {
+    DBG_PRINT("[ fat12        ] read root directory\n");
     uint32_t bytes = fs->root_dir_sectors * fs->bs.bpb.bytes_per_sector;
     DirectoryEntry* entries = (DirectoryEntry*)malloc(bytes);
     block_device_read(fs->device, fs->root_dir_lba, fs->root_dir_sectors, entries);

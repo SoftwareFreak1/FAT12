@@ -58,6 +58,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Hardcoded so every command stays short */
     BlockDevice *device = file_block_device_open("disk.img");
     if (device == NULL)
     {
@@ -70,10 +71,9 @@ int main(int argc, char *argv[])
     char *command = argv[1];
     int ret = 0;
 
-    if (strcmp(command, "ls") == 0)
+    if (strcmp(command, "ls") == 0) {
         ret = cmd_ls(fs, argc, argv);
-    else
-    {
+    } else {
         fprintf(stderr, "unknown command: %s\n", command);
         ret = 1;
     }

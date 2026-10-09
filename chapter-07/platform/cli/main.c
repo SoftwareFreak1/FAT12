@@ -76,31 +76,18 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
     return 0;
 }
 
-static int cmd_create(FAT12FS *fs, int argc, char *argv[])
+static int cmd_rm(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: create <fat_path>  (reads file content from stdin)\n");
+        fprintf(stderr, "usage: rm <path>\n");
         return 1;
     }
 
-    const char *fat_path = argv[2];
-
-    File *file = fat12_open(fs, fat_path, 'w');
-    if (file == NULL)
+    const char *path = argv[2];
+    if (fat12_remove(fs, path) != 0)
     {
-        fprintf(stderr, "error: '%s' already exists or cannot be created\n", fat_path);
-        return 1;
-    }
-
-    uint8_t buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
-        fat12_write(file, buf, n);
-
-    if (fat12_close(file) != 0)
-    {
-        fprintf(stderr, "error: not enough free space to write '%s'\n", fat_path);
+        fprintf(stderr, "error: could not delete\n");
         return 1;
     }
 
@@ -132,8 +119,8 @@ int main(int argc, char *argv[])
         ret = cmd_ls(fs, argc, argv);
     } else if (strcmp(command, "cat") == 0) {
         ret = cmd_cat(fs, argc, argv);
-    } else if (strcmp(command, "create") == 0) {
-        ret = cmd_create(fs, argc, argv);
+    } else if (strcmp(command, "rm") == 0) {
+        ret = cmd_rm(fs, argc, argv);
     } else {
         fprintf(stderr, "unknown command: %s\n", command);
         ret = 1;

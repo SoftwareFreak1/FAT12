@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 /* --- Heap allocator --- */
 
@@ -256,4 +257,24 @@ int toupper(int c)
         return c - ('a' - 'A');
 
     return c;
+}
+
+/* --- Time functions --- */
+
+/* No real-time clock driver: the clock always reads 2024-01-01 12:00:00 */
+
+time_t time(time_t* out)
+{
+    if (out != NULL) *out = 0;
+    return 0;
+}
+
+struct tm* localtime(const time_t* seconds)
+{
+    (void)seconds;
+
+    /* struct tm counts years from 1900 and months from 0 */
+    static struct tm now = { .tm_year = 2024 - 1900, .tm_mon = 0, .tm_mday = 1,
+                             .tm_hour = 12, .tm_min = 0, .tm_sec = 0 };
+    return &now;
 }

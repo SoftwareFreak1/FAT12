@@ -76,31 +76,37 @@ static int cmd_cat(FAT12FS *fs, int argc, char *argv[])
     return 0;
 }
 
-static int cmd_create(FAT12FS *fs, int argc, char *argv[])
+static int cmd_rm(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: create <fat_path>  (reads file content from stdin)\n");
+        fprintf(stderr, "usage: rm <path>\n");
         return 1;
     }
 
-    const char *fat_path = argv[2];
-
-    File *file = fat12_open(fs, fat_path, 'w');
-    if (file == NULL)
+    const char *path = argv[2];
+    if (fat12_remove(fs, path) != 0)
     {
-        fprintf(stderr, "error: '%s' already exists or cannot be created\n", fat_path);
+        fprintf(stderr, "error: could not delete\n");
         return 1;
     }
 
-    uint8_t buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
-        fat12_write(file, buf, n);
+    return 0;
+}
 
-    if (fat12_close(file) != 0)
+static int cmd_mv(FAT12FS *fs, int argc, char *argv[])
+{
+    if (argc != 4)
     {
-        fprintf(stderr, "error: not enough free space to write '%s'\n", fat_path);
+        fprintf(stderr, "usage: mv <src> <dst>\n");
+        return 1;
+    }
+
+    const char *src_path = argv[2];
+    const char *dst_path = argv[3];
+    if (fat12_move(fs, src_path, dst_path) != 0)
+    {
+        fprintf(stderr, "error: could not move\n");
         return 1;
     }
 
@@ -125,37 +131,31 @@ static int cmd_mkdir(FAT12FS *fs, int argc, char *argv[])
     return 0;
 }
 
-static int cmd_rm(FAT12FS *fs, int argc, char *argv[])
+static int cmd_create(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: rm <path>\n");
+        fprintf(stderr, "usage: create <fat_path>  (reads file content from stdin)\n");
         return 1;
     }
 
-    const char *path = argv[2];
-    if (fat12_remove(fs, path) != 0)
+    const char *fat_path = argv[2];
+
+    File *file = fat12_open(fs, fat_path, 'w');
+    if (file == NULL)
     {
-        fprintf(stderr, "error: could not delete\n");
+        fprintf(stderr, "error: name taken or invalid, or parent missing, not a directory, or full\n");
         return 1;
     }
 
-    return 0;
-}
+    uint8_t buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
+        fat12_write(file, buf, n);
 
-static int cmd_mv(FAT12FS *fs, int argc, char *argv[])
-{
-    if (argc != 4)
+    if (fat12_close(file) != 0)
     {
-        fprintf(stderr, "usage: mv <old> <new>\n");
-        return 1;
-    }
-
-    const char *old_path = argv[2];
-    const char *new_path = argv[3];
-    if (fat12_move(fs, old_path, new_path) != 0)
-    {
-        fprintf(stderr, "error: could not move\n");
+        fprintf(stderr, "error: not enough free space to write '%s'\n", fat_path);
         return 1;
     }
 
@@ -187,14 +187,14 @@ int main(int argc, char *argv[])
         ret = cmd_ls(fs, argc, argv);
     } else if (strcmp(command, "cat") == 0) {
         ret = cmd_cat(fs, argc, argv);
-    } else if (strcmp(command, "create") == 0) {
-        ret = cmd_create(fs, argc, argv);
-    } else if (strcmp(command, "mkdir") == 0) {
-        ret = cmd_mkdir(fs, argc, argv);
     } else if (strcmp(command, "rm") == 0) {
         ret = cmd_rm(fs, argc, argv);
     } else if (strcmp(command, "mv") == 0) {
         ret = cmd_mv(fs, argc, argv);
+    } else if (strcmp(command, "mkdir") == 0) {
+        ret = cmd_mkdir(fs, argc, argv);
+    } else if (strcmp(command, "create") == 0) {
+        ret = cmd_create(fs, argc, argv);
     } else {
         fprintf(stderr, "unknown command: %s\n", command);
         ret = 1;

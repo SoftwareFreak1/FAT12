@@ -81,7 +81,7 @@ FAT12FS* fat12_mount(BlockDevice* device)
     fs->cluster_bytes = fs->bs.bpb.sectors_per_cluster * fs->bs.bpb.bytes_per_sector;
 
     DBG_PRINT("[ fat12        ] FAT start LBA: %u\n", fs->fat_lba);
-    DBG_PRINT("[ fat12        ] FAT size (sectors): %u\n", fs->fat_sectors);
+    DBG_PRINT("[ fat12        ] FAT region size (sectors): %u\n", fs->fat_sectors);
     DBG_PRINT("[ fat12        ] Root dir start LBA: %u\n", fs->root_dir_lba);
     DBG_PRINT("[ fat12        ] Root dir size (sectors): %u\n", fs->root_dir_sectors);
     DBG_PRINT("[ fat12        ] Data region start LBA: %u\n", fs->data_lba);
@@ -97,30 +97,34 @@ void fat12_umount(FAT12FS* fs)
 
 static void decode_8_3_name(const DirectoryEntry* entry, char* out)
 {
-    int i = 0;
+    /* Only trailing spaces are padding: scan each part from the right
+       to find where it really ends */
+    int base_len = 8;
+    while (base_len > 0 && entry->name[base_len - 1] == ' ')
+        base_len--;
+
+    int ext_len = 3;
+    while (ext_len > 0 && entry->name[8 + ext_len - 1] == ' ')
+        ext_len--;
+
+    /* Copy the base name, embedded spaces included */
+    int i;
+    for (i = 0; i < base_len; i++)
+        out[i] = entry->name[i];
 
     /* 0x05 escape — real first byte is 0xE5 */
     if (entry->name[0] == 0x05)
-        out[i++] = (char)0xE5;
+        out[0] = (char)0xE5;
 
-    /* Copy name bytes until padding or end */
-    for (; i < 8 && entry->name[i] != ' '; i++)
-        out[i] = entry->name[i];
-
-    /* If extension exists, insert dot and copy non-space bytes */
-    const char* extension = entry->name + 8;
-    int has_extension = extension[0] != ' ';
-    if (has_extension)
+    /* If extension exists, insert dot and copy it */
+    if (ext_len > 0)
     {
         out[i] = '.';
         i++;
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < ext_len; k++)
         {
-            if (extension[k] != ' ')
-            {
-                out[i] = extension[k];
-                i++;
-            }
+            out[i] = entry->name[8 + k];
+            i++;
         }
     }
 
@@ -272,10 +276,12 @@ static DirectoryEntry* find_entry_by_name(
     const char* name
 )
 {
+    /* No 8.3 name is longer than 12 characters, so a longer one can't match */
+    if (strlen(name) > 12) return NULL;
+
     /* Uppercase the name for comparison: names on disk are always uppercase */
     char target[13];
-    strncpy(target, name, 12);
-    target[12] = '\0';
+    strcpy(target, name);
     str_upper(target);
 
     uint32_t offset = 0;
@@ -314,7 +320,7 @@ static int resolve_path(
 
     if (entry != NULL)
     {
-        memcpy(out, entry, sizeof(DirectoryEntry));
+        memcpy(out, entry, DIRECTORY_ENTRY_SIZE);
     }
 
     free(entries);

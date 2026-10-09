@@ -44,8 +44,8 @@ uint32_t fat12_read(File* file, void* buffer, uint32_t size);
 uint32_t fat12_write(File* file, const void* buffer, uint32_t size);
 int fat12_close(File* file);
 
-int fat12_mkdir(FAT12FS* fs, const char* path);
 int fat12_remove(FAT12FS* fs, const char* path);
-int fat12_move(FAT12FS* fs, const char* old_path, const char* new_path);
+int fat12_move(FAT12FS* fs, const char* src_path, const char* dst_path);
+int fat12_mkdir(FAT12FS* fs, const char* path);
 
 #endif

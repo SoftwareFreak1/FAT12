@@ -31,25 +31,33 @@ static void vga_scroll(void)
     vga_clear_row(VGA_HEIGHT - 1);
 }
 
+static void vga_newline(void)
+{
+    cursor_col = 0;
+    cursor_row++;
+
+    if (cursor_row >= VGA_HEIGHT)
+    {
+        vga_scroll();
+        cursor_row = VGA_HEIGHT - 1;
+    }
+}
+
 void vga_print(const char* str)
 {
     for (int i = 0; str[i] != '\0'; i++)
     {
         if (str[i] == '\n')
         {
-            cursor_col = 0;
-            cursor_row++;
-
-            if (cursor_row >= VGA_HEIGHT)
-            {
-                vga_scroll();
-                cursor_row = VGA_HEIGHT - 1;
-            }
-
+            vga_newline();
             continue;
         }
 
         vga[cursor_row * VGA_WIDTH + cursor_col] = (uint16_t)str[i] | ((uint16_t)0x0F << 8);
         cursor_col++;
+
+        /* Wrap lines longer than the screen onto the next row */
+        if (cursor_col >= VGA_WIDTH)
+            vga_newline();
     }
 }

@@ -1128,8 +1128,8 @@ static void initialize_entry_timestamps(DirectoryEntry* entry)
     entry->last_write_time  = encoded_time;
     entry->last_access_date = encoded_date;
 
-    /* create_time only counts 2-second steps: an odd second goes here, as 100 centiseconds */
-    entry->create_time_tenth = (now.seconds % 2) * 100;
+    /* Sub-second creation precision stays unused, as in Chapter 3 */
+    entry->create_time_tenth = 0;
 }
 
 int fat12_mkdir(FAT12FS* fs, const char* path)
@@ -1161,7 +1161,9 @@ int fat12_mkdir(FAT12FS* fs, const char* path)
     if (cluster == 0) goto done;
 
     /* ---- Step 6: Fill in the parent's new entry (in memory only) ---- */
-    /* memset leaves file_size at 0, as a directory's own entry always needs */
+    /* Zero the whole slot: a deleted entry still holds its old attributes,
+       cluster, size, and timestamps. This also leaves file_size at 0,
+       as a directory's own entry always needs */
     DirectoryEntry* entry = &parent.entries[slot];
     memset(entry, 0, DIRECTORY_ENTRY_SIZE);
     memcpy(entry->name, encoded.name, 11);

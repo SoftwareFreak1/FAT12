@@ -1,131 +1,37 @@
 #include <stddef.h>
-#include <stdint.h>
 #include <time.h>
 
 /* --- Heap allocator --- */
 
 #define HEAP_SIZE (8 * 1024 * 1024)
 
-static unsigned char g_heap[HEAP_SIZE];
-
-typedef struct BlockHeader {
-    size_t size;
-    int free;
-    struct BlockHeader* next;
-} BlockHeader;
-
-static BlockHeader* free_list = NULL;
-
-static void heap_init(void)
-{
-    if (free_list != NULL) return;
-    free_list = (BlockHeader*)g_heap;
-    free_list->size = HEAP_SIZE - sizeof(BlockHeader);
-    free_list->free = 1;
-    free_list->next = NULL;
-}
+static unsigned char heap[HEAP_SIZE];
+static size_t heap_used = 0;
 
 void* malloc(size_t size)
 {
-    if (size == 0) return NULL;
-    heap_init();
+    /* Round up so every block stays size_t-aligned */
+    size = (size + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1);
+    if (heap_used + sizeof(size_t) + size > HEAP_SIZE) return NULL;
 
-    BlockHeader* current = free_list;
+    /* Each block starts with its size, so realloc knows how much to copy */
+    size_t* block = (size_t*)(heap + heap_used);
+    *block = size;
+    heap_used += sizeof(size_t) + size;
 
-    while (current != NULL)
-    {
-        if (current->free && current->size >= size)
-        {
-            if (current->size > size + sizeof(BlockHeader))
-            {
-                BlockHeader* new_block =
-                    (BlockHeader*)((unsigned char*)current +
-                        sizeof(BlockHeader) + size);
-                new_block->size =
-                    current->size - size - sizeof(BlockHeader);
-                new_block->free = 1;
-                new_block->next = current->next;
-
-                current->size = size;
-                current->next = new_block;
-            }
-
-            current->free = 0;
-            return (unsigned char*)current + sizeof(BlockHeader);
-        }
-
-        current = current->next;
-    }
-
-    return NULL;
+    return block + 1;
 }
 
 void free(void* ptr)
 {
-    if (ptr == NULL) return;
-
-    BlockHeader* block =
-        (BlockHeader*)((unsigned char*)ptr - sizeof(BlockHeader));
-    block->free = 1;
-
-    BlockHeader* current = free_list;
-    while (current != NULL && current->next != NULL)
-    {
-        if (current->free && current->next->free)
-        {
-            current->size += sizeof(BlockHeader) + current->next->size;
-            current->next = current->next->next;
-        }
-        current = current->next;
-    }
+    /* A bump allocator never reclaims memory */
+    (void)ptr;
 }
-
-void* calloc(size_t count, size_t size)
-{
-    size_t total = count * size;
-    void* ptr = malloc(total);
-    if (ptr == NULL) return NULL;
-
-    unsigned char* p = (unsigned char*)ptr;
-    for (size_t i = 0; i < total; i++)
-        p[i] = 0;
-
-    return ptr;
-}
-
-void* realloc(void* ptr, size_t size)
-{
-    if (ptr == NULL) return malloc(size);
-    if (size == 0)
-    {
-        free(ptr);
-        return NULL;
-    }
-
-    BlockHeader* block =
-        (BlockHeader*)((unsigned char*)ptr - sizeof(BlockHeader));
-    size_t old_size = block->size;
-
-    void* new_ptr = malloc(size);
-    if (new_ptr == NULL) return NULL;
-
-    size_t copy_size = old_size < size ? old_size : size;
-    unsigned char* src = (unsigned char*)ptr;
-    unsigned char* dst = (unsigned char*)new_ptr;
-
-    for (size_t i = 0; i < copy_size; i++)
-        dst[i] = src[i];
-
-    free(ptr);
-    return new_ptr;
-}
-
-/* --- Memory functions --- */
 
 void* memcpy(void* dest, const void* src, size_t n)
 {
-    unsigned char* d = (unsigned char*)dest;
-    const unsigned char* s = (const unsigned char*)src;
+    unsigned char* d = dest;
+    const unsigned char* s = src;
 
     for (size_t i = 0; i < n; i++)
         d[i] = s[i];
@@ -135,12 +41,30 @@ void* memcpy(void* dest, const void* src, size_t n)
 
 void* memset(void* s, int c, size_t n)
 {
-    unsigned char* p = (unsigned char*)s;
+    unsigned char* p = s;
 
     for (size_t i = 0; i < n; i++)
         p[i] = (unsigned char)c;
 
     return s;
+}
+
+void* calloc(size_t count, size_t size)
+{
+    void* ptr = malloc(count * size);
+    if (ptr == NULL) return NULL;
+
+    return memset(ptr, 0, count * size);
+}
+
+void* realloc(void* ptr, size_t size)
+{
+    void* new_ptr = malloc(size);
+    if (ptr == NULL || new_ptr == NULL) return new_ptr;
+
+    /* The old block's size sits right in front of it */
+    size_t old_size = ((size_t*)ptr)[-1];
+    return memcpy(new_ptr, ptr, old_size < size ? old_size : size);
 }
 
 /* --- String functions --- */
@@ -157,26 +81,11 @@ size_t strlen(const char* s)
 
 int strcmp(const char* s1, const char* s2)
 {
-    while (*s1 && (*s1 == *s2))
+    while (*s1 != '\0' && *s1 == *s2)
     {
         s1++;
         s2++;
     }
-
-    return *(unsigned char*)s1 - *(unsigned char*)s2;
-}
-
-int strncmp(const char* s1, const char* s2, size_t n)
-{
-    while (n > 0 && *s1 && (*s1 == *s2))
-    {
-        s1++;
-        s2++;
-        n--;
-    }
-
-    if (n == 0)
-        return 0;
 
     return *(unsigned char*)s1 - *(unsigned char*)s2;
 }
@@ -191,30 +100,11 @@ char* strcpy(char* dest, const char* src)
     return dest;
 }
 
-char* strncpy(char* dest, const char* src, size_t n)
-{
-    size_t i;
-
-    for (i = 0; i < n && src[i] != '\0'; i++)
-        dest[i] = src[i];
-
-    for (; i < n; i++)
-        dest[i] = '\0';
-
-    return dest;
-}
-
 char* strchr(const char* s, int c)
 {
-    while (*s != '\0')
-    {
+    for (; *s != '\0'; s++)
         if (*s == (char)c)
             return (char*)s;
-        s++;
-    }
-
-    if (c == '\0')
-        return (char*)s;
 
     return NULL;
 }
@@ -223,33 +113,12 @@ char* strrchr(const char* s, int c)
 {
     const char* last = NULL;
 
-    while (*s != '\0')
-    {
+    for (; *s != '\0'; s++)
         if (*s == (char)c)
             last = s;
-        s++;
-    }
-
-    if (c == '\0')
-        return (char*)s;
 
     return (char*)last;
 }
-
-char* strdup(const char* s)
-{
-    size_t len = strlen(s) + 1;
-    char* copy = (char*)malloc(len);
-
-    if (copy == NULL) return NULL;
-
-    for (size_t i = 0; i < len; i++)
-        copy[i] = s[i];
-
-    return copy;
-}
-
-/* --- Character functions --- */
 
 int toupper(int c)
 {
@@ -275,6 +144,6 @@ struct tm* localtime(const time_t* seconds)
 
     /* struct tm counts years from 1900 and months from 0 */
     static struct tm now = { .tm_year = 2024 - 1900, .tm_mon = 0, .tm_mday = 1,
-                             .tm_hour = 12, .tm_min = 0, .tm_sec = 0 };
+                             .tm_hour = 12 };
     return &now;
 }

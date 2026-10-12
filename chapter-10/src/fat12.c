@@ -278,9 +278,10 @@ struct File {
     uint32_t position;
     char mode;
 
+    /* Write mode only: where close finds the entry to update */
     FAT12FS* fs;
-    uint16_t dir_cluster;
-    int dir_slot;
+    uint16_t parent_first_cluster;
+    int dir_entry_slot;
 };
 
 static uint16_t get_fat_entry(
@@ -1085,8 +1086,8 @@ static void initialize_entry_timestamps(DirectoryEntry* entry)
     entry->last_write_time  = encoded_time;
     entry->last_access_date = encoded_date;
 
-    /* create_time only counts 2-second steps: an odd second goes here, as 100 centiseconds */
-    entry->create_time_tenth = (now.seconds % 2) * 100;
+    /* Sub-second creation precision stays unused, as in Chapter 3 */
+    entry->create_time_tenth = 0;
 }
 
 int fat12_mkdir(FAT12FS* fs, const char* path)
@@ -1118,7 +1119,9 @@ int fat12_mkdir(FAT12FS* fs, const char* path)
     if (cluster == 0) goto done;
 
     /* ---- Step 6: Fill in the parent's new entry (in memory only) ---- */
-    /* memset leaves file_size at 0, as a directory's own entry always needs */
+    /* Zero the whole slot: a deleted entry still holds its old attributes,
+       cluster, size, and timestamps. This also leaves file_size at 0,
+       as a directory's own entry always needs */
     DirectoryEntry* entry = &parent.entries[slot];
     memset(entry, 0, DIRECTORY_ENTRY_SIZE);
     memcpy(entry->name, encoded.name, 11);
@@ -1139,7 +1142,7 @@ done:
     return result;
 }
 
-static int create_dir_entry(
+static int create_empty_file(
     FAT12FS* fs,
     const char* path,
     int* out_slot,
@@ -1161,12 +1164,12 @@ static int create_dir_entry(
     int slot = find_free_entry(parent.entries, parent.count);
     if (slot < 0) goto done;
 
-    /* Zero the whole slot: a deleted entry still holds its old attributes,
-       cluster, size, and timestamps. memset leaves first_cluster and
-       file_size at 0: no data, no clusters yet */
+    /* Zero the whole slot. memset leaves first_cluster
+       and file_size at 0: no data, no clusters yet */
     DirectoryEntry* entry = &parent.entries[slot];
     memset(entry, 0, DIRECTORY_ENTRY_SIZE);
     memcpy(entry->name, encoded.name, 11);
+    /* Archive bit (Chapter 3): a brand-new file hasn't been backed up yet */
     entry->attributes = FAT12_ATTR_ARCHIVE;
     initialize_entry_timestamps(entry);
 
@@ -1189,7 +1192,7 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
     {
         int slot;
         uint16_t parent_cluster;
-        if (create_dir_entry(fs, path, &slot, &parent_cluster) != 0) return NULL;
+        if (create_empty_file(fs, path, &slot, &parent_cluster) != 0) return NULL;
 
         File* file = (File*)malloc(sizeof(File));
         file->data = NULL;
@@ -1197,8 +1200,8 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
         file->position = 0;
         file->mode = 'w';
         file->fs = fs;
-        file->dir_cluster = parent_cluster;
-        file->dir_slot = slot;
+        file->parent_first_cluster = parent_cluster;
+        file->dir_entry_slot = slot;
         return file;
     }
 
@@ -1236,6 +1239,8 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
 
 uint32_t fat12_write(File* file, const void* buffer, uint32_t size)
 {
+    DBG_PRINT("[ fat12        ] --- fat12_write(%u bytes) ---\n", size);
+
     if (file->mode != 'w') return 0;
 
     uint8_t* new_data = (uint8_t*)realloc(file->data, file->size + size);
@@ -1280,47 +1285,44 @@ static uint16_t allocate_cluster_chain(FAT12FS* fs, uint32_t needed_bytes)
 int fat12_close(File* file)
 {
     DBG_PRINT("[ fat12        ] --- fat12_close() ---\n");
-    int result = 0;
+
+    /* Every failure is a goto to the cleanup at the end. entries
+       starts as NULL, which free() simply ignores */
+    int result = -1;
+    DirectoryEntry* entries = NULL;
 
     if (file->mode == 'w' && file->size > 0)
     {
+        /* Open's copy of the parent is long gone, so re-read it. Entries
+           never move within a directory, so dir_entry_slot still names
+           ours. Reading before allocating leaves nothing to roll back */
+        uint32_t count;
+        entries = read_directory(file->fs, file->parent_first_cluster, &count);
+        if (entries == NULL) goto done;
+
+        /* Volume full: nothing has reached the volume yet */
         uint16_t first = allocate_cluster_chain(file->fs, file->size);
-        if (first == 0)
-        {
-            result = -1;
-        }
-        else
-        {
-            write_cluster_chain(file->fs, first, file->data, file->size);
-            flush_fats(file->fs);
+        if (first == 0) goto done;
 
-            /* Re-read the parent: the array open found the slot in is long gone.
-               Entries never move within a directory, so dir_slot still names ours */
-            uint32_t count;
-            DirectoryEntry* entries = read_directory(file->fs, file->dir_cluster, &count);
-            if (entries == NULL)
-            {
-                /* The data and FAT are already on the volume: those clusters
-                   are now lost, so the caller must know */
-                result = -1;
-            }
-            else
-            {
-                DirectoryEntry* entry = &entries[file->dir_slot];
-                entry->first_cluster = first;
-                entry->file_size = file->size;
+        /* Patch the entry in memory only: it reaches the volume last */
+        DirectoryEntry* entry = &entries[file->dir_entry_slot];
+        entry->first_cluster = first;
+        entry->file_size = file->size;
+        Timestamp now = current_time();
+        entry->last_write_date = encode_date(&now);
+        entry->last_write_time = encode_time(&now);
+        entry->last_access_date = entry->last_write_date;
 
-                /* The content just changed: writing counts as accessing, too */
-                Timestamp now = current_time();
-                entry->last_write_date  = encode_date(&now);
-                entry->last_write_time  = encode_time(&now);
-                entry->last_access_date = encode_date(&now);
-
-                write_directory(file->fs, file->dir_cluster, entries, count);
-                free(entries);
-            }
-        }
+        /* Data, FAT, entry: the crash-safe order */
+        write_cluster_chain(file->fs, first, file->data, file->size);
+        flush_fats(file->fs);
+        write_directory(file->fs, file->parent_first_cluster, entries, count);
     }
+
+    result = 0;
+
+done:
+    free(entries);
 
     /* free(NULL) is a no-op, so empty files are fine */
     free(file->data);

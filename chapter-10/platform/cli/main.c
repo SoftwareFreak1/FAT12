@@ -135,27 +135,30 @@ static int cmd_create(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: create <fat_path>  (reads file content from stdin)\n");
+        fprintf(stderr, "usage: create <path> (reads file content from stdin)\n");
         return 1;
     }
 
-    const char *fat_path = argv[2];
+    const char *path = argv[2];
 
-    File *file = fat12_open(fs, fat_path, 'w');
+    File *file = fat12_open(fs, path, 'w');
     if (file == NULL)
     {
-        fprintf(stderr, "error: name taken or invalid, or parent missing, not a directory, or full\n");
+        fprintf(stderr, "error: could not create file\n");
         return 1;
     }
 
     uint8_t buf[512];
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
+    {
+        /* Only buffers in memory: close delivers the real verdict */
         fat12_write(file, buf, n);
+    }
 
     if (fat12_close(file) != 0)
     {
-        fprintf(stderr, "error: not enough free space to write '%s'\n", fat_path);
+        fprintf(stderr, "error: could not write file\n");
         return 1;
     }
 

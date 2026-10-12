@@ -44,9 +44,13 @@ void kernel_main(void)
     if (f != NULL)
     {
         const char* text = "Hello, FAT12!\n";
-        fat12_write(f, text, strlen(text));
-        fat12_close(f);
-        vga_print("OK\n");
+        uint32_t written = fat12_write(f, text, strlen(text));
+
+        /* Closing writes the data to the volume, so it can fail too */
+        if (fat12_close(f) == 0 && written == strlen(text))
+            vga_print("OK\n");
+        else
+            vga_print("FAILED\n");
     }
     else
     {
@@ -85,9 +89,10 @@ void kernel_main(void)
         uint32_t bytes;
 
         vga_print("OK\n\n    ");
-        while ((bytes = fat12_read(f, buf, sizeof(buf))) > 0)
+        /* Leave room for the '\0' vga_print needs */
+        while ((bytes = fat12_read(f, buf, sizeof(buf) - 1)) > 0)
         {
-            buf[bytes < sizeof(buf) ? bytes : sizeof(buf) - 1] = '\0';
+            buf[bytes] = '\0';
             vga_print(buf);
         }
         vga_print("\n");

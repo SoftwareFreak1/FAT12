@@ -26,6 +26,8 @@
 #define FAT_ENTRY_FREE  0x000
 #define FAT_ENTRY_END_OF_CHAIN   0xFFF
 
+#define FAT12_MAX_CLUSTERS 4084
+
 static BootSector read_boot_sector(BlockDevice* device)
 {
     uint32_t sector_size = block_device_sector_size(device);
@@ -278,9 +280,10 @@ struct File {
     uint32_t position;
     char mode;
 
+    /* Write mode only: where close finds the entry to update */
     FAT12FS* fs;
-    uint16_t dir_cluster;
-    int dir_slot;
+    uint16_t parent_first_cluster;
+    int dir_entry_slot;
 };
 
 static uint16_t get_fat_entry(
@@ -1085,8 +1088,8 @@ static void initialize_entry_timestamps(DirectoryEntry* entry)
     entry->last_write_time  = encoded_time;
     entry->last_access_date = encoded_date;
 
-    /* create_time only counts 2-second steps: an odd second goes here, as 100 centiseconds */
-    entry->create_time_tenth = (now.seconds % 2) * 100;
+    /* Sub-second creation precision stays unused, as in Chapter 3 */
+    entry->create_time_tenth = 0;
 }
 
 int fat12_mkdir(FAT12FS* fs, const char* path)
@@ -1118,7 +1121,9 @@ int fat12_mkdir(FAT12FS* fs, const char* path)
     if (cluster == 0) goto done;
 
     /* ---- Step 6: Fill in the parent's new entry (in memory only) ---- */
-    /* memset leaves file_size at 0, as a directory's own entry always needs */
+    /* Zero the whole slot: a deleted entry still holds its old attributes,
+       cluster, size, and timestamps. This also leaves file_size at 0,
+       as a directory's own entry always needs */
     DirectoryEntry* entry = &parent.entries[slot];
     memset(entry, 0, DIRECTORY_ENTRY_SIZE);
     memcpy(entry->name, encoded.name, 11);
@@ -1139,7 +1144,7 @@ done:
     return result;
 }
 
-static int create_dir_entry(
+static int create_empty_file(
     FAT12FS* fs,
     const char* path,
     int* out_slot,
@@ -1161,12 +1166,12 @@ static int create_dir_entry(
     int slot = find_free_entry(parent.entries, parent.count);
     if (slot < 0) goto done;
 
-    /* Zero the whole slot: a deleted entry still holds its old attributes,
-       cluster, size, and timestamps. memset leaves first_cluster and
-       file_size at 0: no data, no clusters yet */
+    /* Zero the whole slot. memset leaves first_cluster
+       and file_size at 0: no data, no clusters yet */
     DirectoryEntry* entry = &parent.entries[slot];
     memset(entry, 0, DIRECTORY_ENTRY_SIZE);
     memcpy(entry->name, encoded.name, 11);
+    /* Archive bit (Chapter 3): a brand-new file hasn't been backed up yet */
     entry->attributes = FAT12_ATTR_ARCHIVE;
     initialize_entry_timestamps(entry);
 
@@ -1189,7 +1194,7 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
     {
         int slot;
         uint16_t parent_cluster;
-        if (create_dir_entry(fs, path, &slot, &parent_cluster) != 0) return NULL;
+        if (create_empty_file(fs, path, &slot, &parent_cluster) != 0) return NULL;
 
         File* file = (File*)malloc(sizeof(File));
         file->data = NULL;
@@ -1197,8 +1202,8 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
         file->position = 0;
         file->mode = 'w';
         file->fs = fs;
-        file->dir_cluster = parent_cluster;
-        file->dir_slot = slot;
+        file->parent_first_cluster = parent_cluster;
+        file->dir_entry_slot = slot;
         return file;
     }
 
@@ -1236,6 +1241,8 @@ File* fat12_open(FAT12FS* fs, const char* path, char mode)
 
 uint32_t fat12_write(File* file, const void* buffer, uint32_t size)
 {
+    DBG_PRINT("[ fat12        ] --- fat12_write(%u bytes) ---\n", size);
+
     if (file->mode != 'w') return 0;
 
     uint8_t* new_data = (uint8_t*)realloc(file->data, file->size + size);
@@ -1280,47 +1287,44 @@ static uint16_t allocate_cluster_chain(FAT12FS* fs, uint32_t needed_bytes)
 int fat12_close(File* file)
 {
     DBG_PRINT("[ fat12        ] --- fat12_close() ---\n");
-    int result = 0;
+
+    /* Every failure is a goto to the cleanup at the end. entries
+       starts as NULL, which free() simply ignores */
+    int result = -1;
+    DirectoryEntry* entries = NULL;
 
     if (file->mode == 'w' && file->size > 0)
     {
+        /* Open's copy of the parent is long gone, so re-read it. Entries
+           never move within a directory, so dir_entry_slot still names
+           ours. Reading before allocating leaves nothing to roll back */
+        uint32_t count;
+        entries = read_directory(file->fs, file->parent_first_cluster, &count);
+        if (entries == NULL) goto done;
+
+        /* Volume full: nothing has reached the volume yet */
         uint16_t first = allocate_cluster_chain(file->fs, file->size);
-        if (first == 0)
-        {
-            result = -1;
-        }
-        else
-        {
-            write_cluster_chain(file->fs, first, file->data, file->size);
-            flush_fats(file->fs);
+        if (first == 0) goto done;
 
-            /* Re-read the parent: the array open found the slot in is long gone.
-               Entries never move within a directory, so dir_slot still names ours */
-            uint32_t count;
-            DirectoryEntry* entries = read_directory(file->fs, file->dir_cluster, &count);
-            if (entries == NULL)
-            {
-                /* The data and FAT are already on the volume: those clusters
-                   are now lost, so the caller must know */
-                result = -1;
-            }
-            else
-            {
-                DirectoryEntry* entry = &entries[file->dir_slot];
-                entry->first_cluster = first;
-                entry->file_size = file->size;
+        /* Patch the entry in memory only: it reaches the volume last */
+        DirectoryEntry* entry = &entries[file->dir_entry_slot];
+        entry->first_cluster = first;
+        entry->file_size = file->size;
+        Timestamp now = current_time();
+        entry->last_write_date = encode_date(&now);
+        entry->last_write_time = encode_time(&now);
+        entry->last_access_date = entry->last_write_date;
 
-                /* The content just changed: writing counts as accessing, too */
-                Timestamp now = current_time();
-                entry->last_write_date  = encode_date(&now);
-                entry->last_write_time  = encode_time(&now);
-                entry->last_access_date = encode_date(&now);
-
-                write_directory(file->fs, file->dir_cluster, entries, count);
-                free(entries);
-            }
-        }
+        /* Data, FAT, entry: the crash-safe order */
+        write_cluster_chain(file->fs, first, file->data, file->size);
+        flush_fats(file->fs);
+        write_directory(file->fs, file->parent_first_cluster, entries, count);
     }
+
+    result = 0;
+
+done:
+    free(entries);
 
     /* free(NULL) is a no-op, so empty files are fine */
     free(file->data);
@@ -1338,21 +1342,22 @@ static uint16_t compute_sectors_per_fat(
     uint32_t bytes_per_sector
 )
 {
-    uint16_t sectors_per_fat;
-
-    for (sectors_per_fat = 1; sectors_per_fat < 255; sectors_per_fat++)
+    for (uint16_t sectors_per_fat = 1; sectors_per_fat < 255; sectors_per_fat++)
     {
         uint32_t data_sectors = total_sectors - reserved_sector_count - (num_fats * sectors_per_fat) - root_dir_sectors;
         uint32_t total_clusters = data_sectors / sectors_per_cluster;
         uint32_t fat_capacity = (sectors_per_fat * bytes_per_sector * 8) / 12;
 
-        if (total_clusters + FIRST_DATA_CLUSTER <= fat_capacity) break;
+        /* The first FAT size that fits wins — as long as the cluster count
+           it leaves behind still makes this a FAT12 volume */
+        if (total_clusters + FIRST_DATA_CLUSTER <= fat_capacity)
+            return total_clusters <= FAT12_MAX_CLUSTERS ? sectors_per_fat : 0;
     }
 
-    return sectors_per_fat;
+    return 0;
 }
 
-static int format_boot_sector(
+static int build_boot_sector(
     BlockDevice* device,
     const char volume_label[12],
     BootSector* bs
@@ -1365,8 +1370,8 @@ static int format_boot_sector(
     uint32_t total_sectors = (uint32_t)block_device_sector_count(device);
     uint32_t bytes_per_sector = block_device_sector_size(device);
 
-    /* Fixed BPB fields — the book's one-disk convention — plus the one
-       field that has to be computed: how many sectors the FAT needs */
+    /* Fixed BPB fields (the book's one-disk convention), plus the one
+       BPB field that has to be computed: how many sectors the FAT needs */
     bs->bpb.bytes_per_sector = bytes_per_sector;
     bs->bpb.sectors_per_cluster = 2;
     bs->bpb.root_entry_count = 512;
@@ -1375,13 +1380,15 @@ static int format_boot_sector(
 
     uint32_t root_dir_sectors = ((bs->bpb.root_entry_count * DIRECTORY_ENTRY_SIZE) + (bytes_per_sector - 1)) / bytes_per_sector;
 
-    /* Bail out before computing the FAT size, or writing anything, if the
-       disk can't even fit the reserved region, one sector-sized FAT per
-       copy, and the root directory */
+    /* Bail out before computing the FAT size if the disk can't even fit
+       the reserved region, one sector-sized FAT per copy, and the root
+       directory */
     if (total_sectors < bs->bpb.reserved_sector_count + bs->bpb.num_fats + root_dir_sectors)
         return -1;
 
     bs->bpb.fat_size_16 = compute_sectors_per_fat(total_sectors, bs->bpb.reserved_sector_count, bs->bpb.num_fats, root_dir_sectors, bs->bpb.sectors_per_cluster, bytes_per_sector);
+    if (bs->bpb.fat_size_16 == 0)
+        return -1;
 
     /* Only one of the two total-sector fields is ever valid — mount reads
        total_sectors_16 first and falls back to total_sectors_32 when it's
@@ -1399,8 +1406,12 @@ static int format_boot_sector(
     bs->bpb.number_of_heads = 2;
     bs->bpb.hidden_sectors = 0;
     bs->extended_bpb.drive_number = 0x80;
-    bs->extended_bpb.volume_id = 0x07E80101;
     memcpy(bs->extended_bpb.file_system_type, "FAT12   ", 8);
+
+    /* Volume ID: the moment of formatting, date in the high half and
+       time in the low half, so two volumes rarely share the same ID */
+    Timestamp now = current_time();
+    bs->extended_bpb.volume_id = ((uint32_t)encode_date(&now) << 16) | encode_time(&now);
 
     /* Extended boot signature — required for the volume label and volume
        ID fields to be considered valid */
@@ -1413,14 +1424,15 @@ static int format_boot_sector(
     memset(bs->extended_bpb.volume_label, ' ', 11);
     memcpy(bs->extended_bpb.volume_label, volume_label, label_len);
 
-    /* The spec requires this on every FAT boot sector, bootable or not.
-       We still leave boot_code zeroed, so don't actually boot from this
-       disk: a BIOS that tried would jump straight into that zeroed region
-       and execute whatever garbage happens to be sitting there. */
-    bs->signature = 0xAA55;
+    /* Every FAT boot sector starts with a jump instruction (EB ?? 90).
+       We have no boot code, so EB FE jumps to itself: booting this
+       volume hangs instead of running whatever the zeroed bytes decode to */
+    bs->jump[0] = 0xEB;
+    bs->jump[1] = 0xFE;
+    bs->jump[2] = 0x90;
 
-    /* Write the boot sector to disk */
-    block_device_write(device, 0, 1, bs);
+    /* Every FAT boot sector ends with this signature, bootable or not */
+    bs->signature = 0xAA55;
 
     return 0;
 }
@@ -1431,8 +1443,8 @@ static void format_fats(
 )
 {
     /* Allocate a FAT-sized buffer, zeroed — every cluster starts free */
-    uint32_t fat_sectors = bs->bpb.fat_size_16;
-    uint64_t fat_bytes = fat_sectors * bs->bpb.bytes_per_sector;
+    uint32_t sectors_per_fat = bs->bpb.fat_size_16;
+    uint64_t fat_bytes = sectors_per_fat * bs->bpb.bytes_per_sector;
     uint8_t* fat = (uint8_t*)malloc(fat_bytes);
     memset(fat, 0, fat_bytes);
 
@@ -1445,8 +1457,8 @@ static void format_fats(
     /* Write the same buffer to every FAT copy */
     for (uint32_t copy = 0; copy < bs->bpb.num_fats; copy++)
     {
-        uint32_t lba = bs->bpb.reserved_sector_count + (copy * fat_sectors);
-        block_device_write(device, lba, fat_sectors, fat);
+        uint32_t lba = bs->bpb.reserved_sector_count + (copy * sectors_per_fat);
+        block_device_write(device, lba, sectors_per_fat, fat);
     }
 
     free(fat);
@@ -1460,8 +1472,8 @@ static void format_root_dir(BlockDevice* device, BootSector* bs)
     uint32_t root_dir_lba = fat_lba + fat_sectors;
 
     /* Size it in whole sectors and allocate a zero-filled buffer */
-    uint32_t count = ((bs->bpb.root_entry_count * DIRECTORY_ENTRY_SIZE + bs->bpb.bytes_per_sector - 1) / bs->bpb.bytes_per_sector);
-    uint64_t total_bytes = count * bs->bpb.bytes_per_sector;
+    uint32_t root_dir_sectors = ((bs->bpb.root_entry_count * DIRECTORY_ENTRY_SIZE) + (bs->bpb.bytes_per_sector - 1)) / bs->bpb.bytes_per_sector;
+    uint64_t total_bytes = root_dir_sectors * bs->bpb.bytes_per_sector;
     uint8_t* zeros = (uint8_t*)malloc(total_bytes);
     memset(zeros, 0, total_bytes);
 
@@ -1472,17 +1484,32 @@ static void format_root_dir(BlockDevice* device, BootSector* bs)
     initialize_entry_timestamps(label);
 
     /* Write the root directory to disk */
-    block_device_write(device, root_dir_lba, count, zeros);
+    block_device_write(device, root_dir_lba, root_dir_sectors, zeros);
     free(zeros);
 }
 
 int fat12_format(BlockDevice* device, FormatParams params)
 {
     DBG_PRINT("[ fat12        ] --- fat12_format(label=\"%.11s\") ---\n", params.volume_label);
+
+    /* Labels follow the same uppercase-only rule as 8.3 names. params is
+       our own copy, so we can uppercase it in place */
+    str_upper(params.volume_label);
+
     BootSector bs;
-    if (format_boot_sector(device, params.volume_label, &bs) != 0) return -1;
+    if (build_boot_sector(device, params.volume_label, &bs) != 0) return -1;
+
+    /* Wipe the old boot sector first: until the new one lands, no driver
+       recognizes the volume, so none can write into a half-built one */
+    BootSector blank;
+    memset(&blank, 0, sizeof(blank));
+    block_device_write(device, 0, 1, &blank);
+
     format_fats(device, &bs);
     format_root_dir(device, &bs);
+
+    /* The new boot sector goes last: it is what makes the volume valid */
+    block_device_write(device, 0, 1, &bs);
 
     return 0;
 }

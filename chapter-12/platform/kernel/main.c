@@ -6,22 +6,33 @@
 #include "block_device.h"
 #include "fat12.h"
 
+/* There is no printf, so we format hex numbers ourselves */
+static void print_hex(uint32_t value)
+{
+    char str[11] = "0x";
+
+    /* One hex digit per nibble, most significant first */
+    for (int i = 0; i < 8; i++)
+        str[2 + i] = "0123456789ABCDEF"[(value >> (28 - i * 4)) & 0xF];
+    str[10] = '\0';
+
+    vga_print(str);
+}
+
 void kernel_main(void)
 {
     vga_clear();
     vga_print("FAT12 kernel booted\n\n");
     vga_print("Opening block device ..... ");
     BlockDevice* device = ram_disk_block_device_open();
-    if (device == NULL)
-    {
-        vga_print("FAILED\n");
-        return;
-    }
-    vga_print("OK\n");
+    /* Also show where the volume lives in RAM, for inspecting it from outside */
+    vga_print("OK (RAM disk at ");
+    print_hex((uint32_t)ram_disk_block_device_address(device));
+    vga_print(")\n");
 
     /* Format a fresh volume */
     vga_print("Formatting volume ........ ");
-    FormatParams params = { "FAT12VOL" };
+    FormatParams params = { "MYKERNEL" };
     if (fat12_format(device, params) != 0)
     {
         vga_print("FAILED\n");

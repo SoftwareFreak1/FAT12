@@ -1,7 +1,7 @@
 /* _start, defined in boot.s, is the entry point */
 ENTRY(_start)
 
-/* Optional — fixes the linker's RWX LOAD segment warning by granting each segment only the permissions it needs */
+/* One loadable segment per permission set */
 PHDRS
 {
     text   PT_LOAD FLAGS(5); /* R+X */
@@ -12,12 +12,13 @@ PHDRS
 /* Lays out where each section goes in the final kernel binary */
 SECTIONS
 {
-    /* Our kernel binary starts loading here — the standard convention for avoiding the BIOS/VGA memory hole below 1 MB */
+    /* Load above the BIOS and VGA memory in the first 1 MiB */
     . = 1M;
 
-    /* Groups the kernel's code, read-only data, and writable data/bss into their own PT_LOAD segments, each with only the permissions it needs */
     .text : {
-        KEEP(*(.multiboot))  /* Keeps the Multiboot header from boot.s in the first 8 KB, where the bootloader looks for it */
+        /* The bootloader looks for the Multiboot header in the
+           first 8 KiB, so it goes first */
+        KEEP(*(.multiboot))
         *(.text*)
     } :text
     .rodata : { *(.rodata*) } :rodata

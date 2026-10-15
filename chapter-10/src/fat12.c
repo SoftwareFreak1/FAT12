@@ -26,6 +26,18 @@
 #define FAT_ENTRY_FREE  0x000
 #define FAT_ENTRY_END_OF_CHAIN   0xFFF
 
+static int find_free_entry(DirectoryEntry* entries, uint32_t count);
+static void initialize_entry_timestamps(DirectoryEntry* entry);
+static void write_directory(FAT12FS* fs ,uint16_t first_cluster, DirectoryEntry* entries, uint32_t count);
+static uint16_t allocate_cluster(FAT12FS* fs);
+static void free_cluster_chain(FAT12FS* fs, uint16_t first_cluster);
+static Timestamp current_time(void);
+static void set_fat_entry(FAT12FS* fs, uint16_t cluster, uint16_t entry);
+static uint16_t encode_date(const Timestamp* dt);
+static uint16_t encode_time(const Timestamp* dt);
+static void write_cluster_chain(FAT12FS* fs, uint16_t first_cluster, const uint8_t* data, uint32_t size);
+static void flush_fats(FAT12FS* fs);
+
 static BootSector read_boot_sector(BlockDevice* device)
 {
     uint32_t sector_size = block_device_sector_size(device);
@@ -131,7 +143,7 @@ static void decode_8_3_name(const DirectoryEntry* entry, char* out)
     for (i = 0; i < base_len; i++)
         out[i] = entry->name[i];
 
-    /* 0x05 escape — real first byte is 0xE5 */
+    /* 0x05 escape: real first byte is 0xE5 */
     if (entry->name[0] == 0x05)
         out[0] = (char)0xE5;
 
@@ -197,7 +209,7 @@ static bool is_lfn_fragment(const DirectoryEntry* entry)
 
 static bool is_invalid_entry(const DirectoryEntry* entry)
 {
-    /* Directory and Volume Label together mean neither — the FAT spec's
+    /* Directory and Volume Label together mean neither: the FAT spec's
        own validation algorithm treats this combination as corruption,
        never something a well-formed volume produces. */
     uint8_t mask = FAT12_ATTR_DIRECTORY | FAT12_ATTR_VOLUME_ID;
@@ -277,8 +289,6 @@ struct File {
     uint32_t size;
     uint32_t position;
     char mode;
-
-    /* Write mode only: where close finds the entry to update */
     FAT12FS* fs;
     uint16_t parent_first_cluster;
     int dir_entry_slot;
@@ -522,19 +532,52 @@ void fat12_closedir(Directory* dir)
     free(dir);
 }
 
-uint32_t fat12_read(File* file, void* buffer, uint32_t size)
+static int encode_8_3_name(const char* name, char out[11])
 {
-    if (file->mode != 'r') return 0;
-    /* Empty files have no data to copy from */
-    if (file->data == NULL) return 0;
+    /* Split at the last dot: base name before it, extension after it */
+    size_t len = strlen(name);
+    const char* separator = strrchr(name, '.');
+    size_t base_len = separator ? (size_t)(separator - name) : len;
+    size_t ext_len = separator ? len - base_len - 1 : 0;
 
-    uint32_t remaining = file->size - file->position;
-    if (size < remaining) remaining = size;
+    /* Checks on the whole name, before the per-character pass:
+       base name 1-8 characters, extension at most 3, no leading space */
+    if (base_len < 1 || base_len > 8) return -1;
+    if (ext_len > 3) return -1;
+    if (name[0] == ' ') return -1;
 
-    memcpy(buffer, file->data + file->position, remaining);
-    file->position += remaining;
+    /* Blank-fill all 11 bytes up front: whatever we do not overwrite below
+       is already the space padding the format calls for */
+    memset(out, ' ', 11);
 
-    return remaining;
+    /* Copy the name in one character at a time, checking each on the way. */
+    char* next = out;
+    for (const char* p = name; *p; p++)
+    {
+        /* The dot itself is never stored: skip it, and write everything
+           after it into the extension's slot */
+        if (p == separator)
+        {
+            next = out + 8;
+            continue;
+        }
+
+        unsigned char c = (unsigned char)*p;
+
+        /* No control characters, and none of the characters FAT forbids */
+        if (c < 0x20) return -1;
+        if (strchr("\"*+,./:;<=>?[\\]|", c)) return -1;
+
+        /* We accept lowercase input, but the volume stores only uppercase, so we convert it */
+        *next++ = (char)toupper(c);
+    }
+
+    /* 0x05 escape: if the first character is 0xE5, store 0x05
+       instead so the entry is not mistaken for a free slot on the volume */
+    if ((unsigned char)out[0] == NAME_FREE)
+        out[0] = 0x05;
+
+    return 0;
 }
 
 typedef struct {
@@ -577,6 +620,197 @@ static int resolve_parent(FAT12FS* fs, const char* path, ParentDir* out)
     out->count = count;
 
     return 0;
+}
+
+static int create_empty_file(
+    FAT12FS* fs,
+    const char* path,
+    int* out_slot,
+    uint16_t* out_parent_cluster
+)
+{
+    ParentDir parent;
+    if (resolve_parent(fs, path, &parent) != 0) return -1;
+
+    int result = -1;
+
+    /* Compare the name's canonical spelling, as fat12_move does */
+    DirectoryEntry encoded;
+    char canonical[13];
+    if (encode_8_3_name(parent.entry_name, encoded.name) != 0) goto done;
+    decode_8_3_name(&encoded, canonical);
+    if (find_entry_by_name(parent.entries, parent.count, canonical) != NULL) goto done;
+
+    int slot = find_free_entry(parent.entries, parent.count);
+    if (slot < 0) goto done;
+
+    /* Zero the whole slot. memset leaves first_cluster
+       and file_size at 0: no data, no clusters yet */
+    DirectoryEntry* entry = &parent.entries[slot];
+    memset(entry, 0, DIRECTORY_ENTRY_SIZE);
+    memcpy(entry->name, encoded.name, 11);
+
+    /* Archive bit (Chapter 3): a brand-new file hasn't been backed up yet */
+    entry->attributes = FAT12_ATTR_ARCHIVE;
+
+    initialize_entry_timestamps(entry);
+    write_directory(fs, parent.first_cluster, parent.entries, parent.count);
+
+    *out_slot = slot;
+    *out_parent_cluster = parent.first_cluster;
+    result = 0;
+
+done:
+    free(parent.entries);
+    return result;
+}
+
+File* fat12_open(FAT12FS* fs, const char* path, char mode)
+{
+    DBG_PRINT("[ fat12        ] --- fat12_open(\"%s\", mode='%c') ---\n", path, mode);
+
+    if (mode == 'w')
+    {
+        int slot;
+        uint16_t parent_cluster;
+        if (create_empty_file(fs, path, &slot, &parent_cluster) != 0) return NULL;
+
+        File* file = (File*)malloc(sizeof(File));
+        file->data = NULL;
+        file->size = 0;
+        file->position = 0;
+        file->mode = 'w';
+        file->fs = fs;
+        file->parent_first_cluster = parent_cluster;
+        file->dir_entry_slot = slot;
+
+        return file;
+    }
+
+    if (mode == 'r')
+    {
+        DirectoryEntry resolved;
+        /* Fail if the path does not resolve to an entry */
+        if (resolve_path(fs, path, &resolved) != 0) return NULL;
+        /* Only files can be opened, not directories */
+        if (resolved.attributes & FAT12_ATTR_DIRECTORY) return NULL;
+
+        uint8_t* data = NULL;
+        uint32_t chain_bytes = 0;
+
+        if (resolved.file_size > 0)
+        {
+            data = read_cluster_chain(fs, resolved.first_cluster, &chain_bytes);
+            if (data == NULL) return NULL;
+        }
+
+        File* file = (File*)malloc(sizeof(File));
+        file->data = data;
+
+        /* a chain shorter than file_size means a corrupt volume:
+           never let fat12_read run past the bytes we actually loaded */
+        file->size = resolved.file_size < chain_bytes ? resolved.file_size : chain_bytes;
+
+        file->position = 0;
+        file->mode = 'r';
+        return file;
+    }
+
+    return NULL;
+}
+
+uint32_t fat12_read(File* file, void* buffer, uint32_t size)
+{
+    if (file->mode != 'r') return 0;
+    /* Empty files have no data to copy from */
+    if (file->data == NULL) return 0;
+
+    uint32_t remaining = file->size - file->position;
+    if (size < remaining) remaining = size;
+
+    memcpy(buffer, file->data + file->position, remaining);
+    file->position += remaining;
+
+    return remaining;
+}
+
+static uint16_t allocate_cluster_chain(FAT12FS* fs, uint32_t needed_bytes)
+{
+    uint32_t needed_clusters = (needed_bytes + fs->cluster_bytes - 1) / fs->cluster_bytes;
+
+    DBG_PRINT("[ fat12        ] allocating %u cluster(s) for %u bytes\n", needed_clusters, needed_bytes);
+
+    uint16_t first = 0;
+    uint16_t last = 0;
+
+    for (uint32_t i = 0; i < needed_clusters; i++)
+    {
+        /* The new cluster arrives already marked end-of-chain */
+        uint16_t cluster = allocate_cluster(fs);
+        if (cluster == 0)
+        {
+            /* Volume full: release what we have claimed so far (in memory only) */
+            if (first != 0) free_cluster_chain(fs, first);
+            return 0;
+        }
+
+        /* Start the chain, or append by pointing the old end at the new cluster */
+        if (first == 0) {
+            first = cluster;
+        } else {
+            set_fat_entry(fs, last, cluster);
+        }
+
+        last = cluster;
+    }
+
+    return first;
+}
+
+int fat12_close(File* file)
+{
+    DBG_PRINT("[ fat12        ] --- fat12_close() ---\n");
+
+    /* Every failure is a goto to the cleanup at the end. entries
+       starts as NULL, which free() simply ignores */
+    int result = -1;
+    DirectoryEntry* entries = NULL;
+
+    if (file->mode == 'w' && file->size > 0)
+    {
+        uint32_t count;
+        entries = read_directory(file->fs, file->parent_first_cluster, &count);
+        if (entries == NULL) goto done;
+
+        uint16_t first = allocate_cluster_chain(file->fs, file->size);
+        if (first == 0) goto done;
+
+        DirectoryEntry* entry = &entries[file->dir_entry_slot];
+        entry->first_cluster = first;
+        entry->file_size = file->size;
+        Timestamp now = current_time();
+        entry->last_write_date = encode_date(&now);
+        entry->last_write_time = encode_time(&now);
+        entry->last_access_date = entry->last_write_date;
+
+        /* A backup may have cleared the archive bit since open, so set it again */
+        entry->attributes |= FAT12_ATTR_ARCHIVE;
+
+        write_cluster_chain(file->fs, first, file->data, file->size);
+        flush_fats(file->fs);
+        write_directory(file->fs, file->parent_first_cluster, entries, count);
+    }
+
+    result = 0;
+
+done:
+    free(entries);
+
+    /* free(NULL) is a no-op, so empty files are fine */
+    free(file->data);
+    free(file);
+
+    return result;
 }
 
 static bool is_dot_entry(const char* name)
@@ -783,54 +1017,6 @@ int fat12_remove(FAT12FS* fs, const char* path)
 done:
     free(parent.entries);
     return result;
-}
-
-static int encode_8_3_name(const char* name, char out[11])
-{
-    /* Split at the last dot: base name before it, extension after it */
-    size_t len = strlen(name);
-    const char* separator = strrchr(name, '.');
-    size_t base_len = separator ? (size_t)(separator - name) : len;
-    size_t ext_len = separator ? len - base_len - 1 : 0;
-
-    /* Checks on the whole name, before the per-character pass:
-       base name 1-8 characters, extension at most 3, no leading space */
-    if (base_len < 1 || base_len > 8) return -1;
-    if (ext_len > 3) return -1;
-    if (name[0] == ' ') return -1;
-
-    /* Blank-fill all 11 bytes up front: whatever we do not overwrite below
-       is already the space padding the format calls for */
-    memset(out, ' ', 11);
-
-    /* Copy the name in one character at a time, checking each on the way. */
-    char* next = out;
-    for (const char* p = name; *p; p++)
-    {
-        /* The dot itself is never stored: skip it, and write everything
-           after it into the extension's slot */
-        if (p == separator)
-        {
-            next = out + 8;
-            continue;
-        }
-
-        unsigned char c = (unsigned char)*p;
-
-        /* No control characters, and none of the characters FAT forbids */
-        if (c < 0x20) return -1;
-        if (strchr("\"*+,./:;<=>?[\\]|", c)) return -1;
-
-        /* We accept lowercase input, but the volume stores only uppercase, so we convert it */
-        *next++ = (char)toupper(c);
-    }
-
-    /* 0x05 escape: if the first character is 0xE5, store 0x05
-       instead so the entry is not mistaken for a free slot on the volume */
-    if ((unsigned char)out[0] == NAME_FREE)
-        out[0] = 0x05;
-
-    return 0;
 }
 
 static int find_free_entry(DirectoryEntry* entries, uint32_t count)
@@ -1142,101 +1328,6 @@ done:
     return result;
 }
 
-static int create_empty_file(
-    FAT12FS* fs,
-    const char* path,
-    int* out_slot,
-    uint16_t* out_parent_cluster
-)
-{
-    ParentDir parent;
-    if (resolve_parent(fs, path, &parent) != 0) return -1;
-
-    int result = -1;
-
-    /* Compare the name's canonical spelling, as fat12_move does */
-    DirectoryEntry encoded;
-    char canonical[13];
-    if (encode_8_3_name(parent.entry_name, encoded.name) != 0) goto done;
-    decode_8_3_name(&encoded, canonical);
-    if (find_entry_by_name(parent.entries, parent.count, canonical) != NULL) goto done;
-
-    int slot = find_free_entry(parent.entries, parent.count);
-    if (slot < 0) goto done;
-
-    /* Zero the whole slot. memset leaves first_cluster
-       and file_size at 0: no data, no clusters yet */
-    DirectoryEntry* entry = &parent.entries[slot];
-    memset(entry, 0, DIRECTORY_ENTRY_SIZE);
-    memcpy(entry->name, encoded.name, 11);
-    /* Archive bit (Chapter 3): a brand-new file hasn't been backed up yet */
-    entry->attributes = FAT12_ATTR_ARCHIVE;
-    initialize_entry_timestamps(entry);
-
-    write_directory(fs, parent.first_cluster, parent.entries, parent.count);
-
-    *out_slot = slot;
-    *out_parent_cluster = parent.first_cluster;
-    result = 0;
-
-done:
-    free(parent.entries);
-    return result;
-}
-
-File* fat12_open(FAT12FS* fs, const char* path, char mode)
-{
-    DBG_PRINT("[ fat12        ] --- fat12_open(\"%s\", mode='%c') ---\n", path, mode);
-
-    if (mode == 'w')
-    {
-        int slot;
-        uint16_t parent_cluster;
-        if (create_empty_file(fs, path, &slot, &parent_cluster) != 0) return NULL;
-
-        File* file = (File*)malloc(sizeof(File));
-        file->data = NULL;
-        file->size = 0;
-        file->position = 0;
-        file->mode = 'w';
-        file->fs = fs;
-        file->parent_first_cluster = parent_cluster;
-        file->dir_entry_slot = slot;
-        return file;
-    }
-
-    if (mode == 'r')
-    {
-        DirectoryEntry resolved;
-        /* Fail if the path does not resolve to an entry */
-        if (resolve_path(fs, path, &resolved) != 0) return NULL;
-        /* Only files can be opened, not directories */
-        if (resolved.attributes & FAT12_ATTR_DIRECTORY) return NULL;
-
-        uint8_t* data = NULL;
-        uint32_t chain_bytes = 0;
-
-        if (resolved.file_size > 0)
-        {
-            data = read_cluster_chain(fs, resolved.first_cluster, &chain_bytes);
-            if (data == NULL) return NULL;
-        }
-
-        File* file = (File*)malloc(sizeof(File));
-        file->data = data;
-
-        /* a chain shorter than file_size means a corrupt volume:
-           never let fat12_read run past the bytes we actually loaded */
-        file->size = resolved.file_size < chain_bytes ? resolved.file_size : chain_bytes;
-
-        file->position = 0;
-        file->mode = 'r';
-        return file;
-    }
-
-    return NULL;
-}
-
 uint32_t fat12_write(File* file, const void* buffer, uint32_t size)
 {
     DBG_PRINT("[ fat12        ] --- fat12_write(%u bytes) ---\n", size);
@@ -1245,88 +1336,9 @@ uint32_t fat12_write(File* file, const void* buffer, uint32_t size)
 
     uint8_t* new_data = (uint8_t*)realloc(file->data, file->size + size);
     memcpy(new_data + file->size, buffer, size);
+
     file->data = new_data;
     file->size += size;
 
     return size;
-}
-
-static uint16_t allocate_cluster_chain(FAT12FS* fs, uint32_t needed_bytes)
-{
-    uint32_t needed_clusters = (needed_bytes + fs->cluster_bytes - 1) / fs->cluster_bytes;
-
-    DBG_PRINT("[ fat12        ] allocating %u cluster(s) for %u bytes\n", needed_clusters, needed_bytes);
-
-    uint16_t first = 0;
-    uint16_t last = 0;
-
-    for (uint32_t i = 0; i < needed_clusters; i++)
-    {
-        /* Each new cluster arrives already marked end-of-chain... */
-        uint16_t cluster = allocate_cluster(fs);
-        if (cluster == 0)
-        {
-            /* Volume full: release what we claimed so far (in memory only) */
-            if (first != 0) free_cluster_chain(fs, first);
-            return 0;
-        }
-
-        /* ...so linking it on is just pointing the old end at it */
-        if (first == 0)
-            first = cluster;
-        else
-            set_fat_entry(fs, last, cluster);
-        last = cluster;
-    }
-
-    return first;
-}
-
-int fat12_close(File* file)
-{
-    DBG_PRINT("[ fat12        ] --- fat12_close() ---\n");
-
-    /* Every failure is a goto to the cleanup at the end. entries
-       starts as NULL, which free() simply ignores */
-    int result = -1;
-    DirectoryEntry* entries = NULL;
-
-    if (file->mode == 'w' && file->size > 0)
-    {
-        /* Open's copy of the parent is long gone, so re-read it. Entries
-           never move within a directory, so dir_entry_slot still names
-           ours. Reading before allocating leaves nothing to roll back */
-        uint32_t count;
-        entries = read_directory(file->fs, file->parent_first_cluster, &count);
-        if (entries == NULL) goto done;
-
-        /* Volume full: nothing has reached the volume yet */
-        uint16_t first = allocate_cluster_chain(file->fs, file->size);
-        if (first == 0) goto done;
-
-        /* Patch the entry in memory only: it reaches the volume last */
-        DirectoryEntry* entry = &entries[file->dir_entry_slot];
-        entry->first_cluster = first;
-        entry->file_size = file->size;
-        Timestamp now = current_time();
-        entry->last_write_date = encode_date(&now);
-        entry->last_write_time = encode_time(&now);
-        entry->last_access_date = entry->last_write_date;
-
-        /* Data, FAT, entry: the crash-safe order */
-        write_cluster_chain(file->fs, first, file->data, file->size);
-        flush_fats(file->fs);
-        write_directory(file->fs, file->parent_first_cluster, entries, count);
-    }
-
-    result = 0;
-
-done:
-    free(entries);
-
-    /* free(NULL) is a no-op, so empty files are fine */
-    free(file->data);
-    free(file);
-
-    return result;
 }

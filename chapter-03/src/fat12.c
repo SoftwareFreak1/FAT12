@@ -103,7 +103,7 @@ static void decode_8_3_name(const DirectoryEntry* entry, char* out)
     for (i = 0; i < base_len; i++)
         out[i] = entry->name[i];
 
-    /* 0x05 escape — real first byte is 0xE5 */
+    /* 0x05 escape: real first byte is 0xE5 */
     if (entry->name[0] == 0x05)
         out[0] = (char)0xE5;
 
@@ -169,7 +169,7 @@ static bool is_lfn_fragment(const DirectoryEntry* entry)
 
 static bool is_invalid_entry(const DirectoryEntry* entry)
 {
-    /* Directory and Volume Label together mean neither — the FAT spec's
+    /* Directory and Volume Label together mean neither: the FAT spec's
        own validation algorithm treats this combination as corruption,
        never something a well-formed volume produces. */
     uint8_t mask = FAT12_ATTR_DIRECTORY | FAT12_ATTR_VOLUME_ID;

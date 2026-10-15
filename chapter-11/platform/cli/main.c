@@ -135,7 +135,7 @@ static int cmd_create(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: create <path> (reads file content from stdin)\n");
+        fprintf(stderr, "usage: create <path>\n");
         return 1;
     }
 
@@ -148,12 +148,12 @@ static int cmd_create(FAT12FS *fs, int argc, char *argv[])
         return 1;
     }
 
-    uint8_t buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
+    uint8_t buffer[512];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), stdin)) > 0)
     {
-        /* Only buffers in memory: close delivers the real verdict */
-        fat12_write(file, buf, n);
+        /* Only buffers in memory and cannot fail here, so we skip checking the result */
+        fat12_write(file, buffer, bytes_read);
     }
 
     if (fat12_close(file) != 0)
@@ -173,9 +173,10 @@ static int cmd_format(BlockDevice *device, int argc, char *argv[])
         return 1;
     }
 
+    /* Zero-initialized, so the label stays terminated even when strncpy
+       stops at the size limit */
     FormatParams params = { 0 };
     strncpy(params.volume_label, argv[2], sizeof(params.volume_label) - 1);
-    params.volume_label[sizeof(params.volume_label) - 1] = '\0';
 
     if (fat12_format(device, params) != 0)
     {
@@ -204,7 +205,7 @@ int main(int argc, char *argv[])
 
     char *command = argv[1];
 
-    /* format works on the raw disk, so it runs before anything is mounted */
+    /* format works on the block device itself, so it runs before anything is mounted */
     if (strcmp(command, "format") == 0)
     {
         int ret = cmd_format(device, argc, argv);

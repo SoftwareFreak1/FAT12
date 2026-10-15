@@ -3,61 +3,51 @@
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
+#define VGA_WHITE_ON_BLACK 0x0F
 
+/* The VGA text buffer at its fixed address. volatile because the display
+   hardware reads it, not our code: without it, the compiler could drop or
+   merge writes it thinks nothing ever reads */
 static volatile uint16_t* vga = (uint16_t*)0xB8000;
+
+/* Where the next character goes: right after the last one we printed */
 static int cursor_row = 0;
 static int cursor_col = 0;
 
-static void vga_clear_row(int row)
+/* Packs a character and our fixed attribute into one 16-bit cell */
+static uint16_t char_to_cell(char c)
 {
-    for (int c = 0; c < VGA_WIDTH; c++)
-        vga[row * VGA_WIDTH + c] = (uint16_t)(' ' | (0x0F << 8));
+    return (uint16_t)(uint8_t)c | ((uint16_t)VGA_WHITE_ON_BLACK << 8);
 }
 
 void vga_clear(void)
 {
-    for (int r = 0; r < VGA_HEIGHT; r++)
-        vga_clear_row(r);
-}
-
-static void vga_scroll(void)
-{
-    /* Shift every row up by one */
-    for (int r = 0; r < VGA_HEIGHT - 1; r++)
-        for (int c = 0; c < VGA_WIDTH; c++)
-            vga[r * VGA_WIDTH + c] = vga[(r + 1) * VGA_WIDTH + c];
-
-    /* Clear the last row */
-    vga_clear_row(VGA_HEIGHT - 1);
-}
-
-static void vga_newline(void)
-{
-    cursor_col = 0;
-    cursor_row++;
-
-    if (cursor_row >= VGA_HEIGHT)
-    {
-        vga_scroll();
-        cursor_row = VGA_HEIGHT - 1;
-    }
+    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
+        vga[i] = char_to_cell(' ');
 }
 
 void vga_print(const char* str)
 {
     for (int i = 0; str[i] != '\0'; i++)
     {
+        /* No scrolling: our kernel never prints more than one screen
+           holds, so text past the last row is simply dropped */
+        if (cursor_row >= VGA_HEIGHT)
+            return;
+
         if (str[i] == '\n')
         {
-            vga_newline();
+            cursor_col = 0;
+            cursor_row++;
             continue;
         }
 
-        vga[cursor_row * VGA_WIDTH + cursor_col] = (uint16_t)str[i] | ((uint16_t)0x0F << 8);
-        cursor_col++;
-
-        /* Wrap lines longer than the screen onto the next row */
+        /* Our lines always fit on the screen, so anything past
+           the last column is simply dropped */
         if (cursor_col >= VGA_WIDTH)
-            vga_newline();
+            continue;
+
+        vga[cursor_row * VGA_WIDTH + cursor_col] = char_to_cell(str[i]);
+        cursor_col++;
     }
 }

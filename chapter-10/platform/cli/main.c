@@ -135,7 +135,7 @@ static int cmd_create(FAT12FS *fs, int argc, char *argv[])
 {
     if (argc != 3)
     {
-        fprintf(stderr, "usage: create <path> (reads file content from stdin)\n");
+        fprintf(stderr, "usage: create <path>\n");
         return 1;
     }
 
@@ -148,12 +148,12 @@ static int cmd_create(FAT12FS *fs, int argc, char *argv[])
         return 1;
     }
 
-    uint8_t buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0)
+    uint8_t buffer[512];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), stdin)) > 0)
     {
-        /* Only buffers in memory: close delivers the real verdict */
-        fat12_write(file, buf, n);
+        /* Only buffers in memory and cannot fail here, so we skip checking the result */
+        fat12_write(file, buffer, bytes_read);
     }
 
     if (fat12_close(file) != 0)
@@ -202,6 +202,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "unknown command: %s\n", command);
         ret = 1;
     }
+
 
     fat12_umount(fs);
     block_device_close(device);

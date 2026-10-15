@@ -21,7 +21,7 @@ void kernel_main(void)
 
     /* Format a fresh volume */
     vga_print("Formatting volume ........ ");
-    FormatParams params = { "FAT12VOL" };
+    FormatParams params = { "MYKERNEL" };
     if (fat12_format(device, params) != 0)
     {
         vga_print("FAILED\n");

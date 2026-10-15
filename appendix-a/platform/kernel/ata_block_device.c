@@ -111,7 +111,7 @@ static inline void ata_issue_command(uint8_t command, uint32_t lba, uint8_t sect
     outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
     outb(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
 
-    /* triggers execution — must be last */
+    /* triggers execution, so it must be last */
     outb(ATA_COMMAND, command);
 
     ata_wait_busy_clear();
